@@ -9,19 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from config import (
-    FAST_SENSOR_INTERVAL,
-    MAX_POLL_INTERVAL,
-    MEDIUM_SENSOR_INTERVAL,
-    OBD_CONNECT_ATTEMPTS,
-    OBD_CONNECT_RETRY_DELAY,
-    OBD_CONNECT_TIMEOUT,
-    POLL_INTERVAL,
-    RPM_POLL_INTERVAL,
-    SCAN_HISTORY_LIMIT,
-    SLOW_SENSOR_INTERVAL,
-    STALE_AFTER_SECONDS,
-)
+from config import APP_VERSION
 from scanner_core.demo_services import (
     build_demo_dtc_snapshot,
     build_demo_freeze_frame,
@@ -50,9 +38,11 @@ from scanner_core.report_services import build_purchase_report
 from scanner_core.session_services import build_scanner_session_state
 from scanner_core.storage_services import (
     db_path_from_file,
+    get_recent_garage_notes as storage_get_recent_garage_notes,
     get_recent_scans as storage_get_recent_scans,
     get_setting as storage_get_setting,
     init_storage,
+    save_garage_note as storage_save_garage_note,
     save_scan_snapshot as storage_save_scan_snapshot,
     set_setting as storage_set_setting,
 )
@@ -68,7 +58,6 @@ except Exception as e:
     OBD_IMPORT_ERROR = e
 
 app = Flask(__name__)
-APP_VERSION = "v0.2.2"
 
 
 def current_language():
@@ -109,6 +98,11 @@ def localize_json_response(response):
     return response
 
 DB_PATH = db_path_from_file(__file__)
+POLL_INTERVAL = 0.2
+RPM_POLL_INTERVAL = 0.05
+MAX_POLL_INTERVAL = 0.8
+STALE_AFTER_SECONDS = 0.9
+SCAN_HISTORY_LIMIT = 20
 
 connection = None
 vehicle_data = {}
@@ -184,7 +178,6 @@ demo_drive_state = {
     "preset": "idle",
 }
 error_log_state = {}
-last_live_command_poll = {}
 
 
 def is_known_port_config_error(error):
@@ -203,7 +196,6 @@ def log_error(source, error):
     now = time.time()
     last_seen = error_log_state.get(signature, 0)
     should_emit_console = (now - last_seen) >= 12
-    is_live_query_error = source == "Live data query"
 
     if should_emit_console:
         if is_known_port_config_error(error):
@@ -216,10 +208,8 @@ def log_error(source, error):
         error_log_state[signature] = now
 
     with state_lock:
-        live_session_active = bool(obd_status.get("connected") or obd_status.get("last_successful_update"))
-        if not (is_live_query_error and live_session_active):
-            obd_status["error"] = str(error)
-            obd_status["user_message"] = console_message
+        obd_status["error"] = str(error)
+        obd_status["user_message"] = console_message
         obd_status["last_update"] = time.strftime("%H:%M:%S")
         existing = obd_status["recent_errors"][0] if obd_status["recent_errors"] else None
         if existing and existing.get("source") == source and existing.get("technical_message") == str(error):
@@ -292,6 +282,46 @@ def set_limited_mode_enabled(enabled):
     return set_setting("limited_mode", "1" if enabled else "0")
 
 
+POLL_PROFILES = {
+    "performance": {
+        "label": "Performance",
+        "limited": False,
+        "description": "Performance uses faster polling for a more live feel.",
+    },
+    "balanced": {
+        "label": "Balanced",
+        "limited": False,
+        "description": "Balanced is recommended for normal diagnostics.",
+    },
+    "safe": {
+        "label": "Safe",
+        "limited": True,
+        "description": "Safe slows non-critical values and limits polling to core live data.",
+    },
+}
+
+
+def normalize_poll_profile(profile):
+    profile = str(profile or "balanced").strip().lower()
+    return profile if profile in POLL_PROFILES else "balanced"
+
+
+def get_poll_profile_name():
+    return normalize_poll_profile(get_setting("poll_profile", "balanced"))
+
+
+def get_poll_profile():
+    name = get_poll_profile_name()
+    return {
+        "id": name,
+        **POLL_PROFILES[name],
+    }
+
+
+def set_poll_profile_name(profile):
+    return set_setting("poll_profile", normalize_poll_profile(profile))
+
+
 def get_demo_preset_name():
     return normalize_demo_preset(get_setting("demo_preset", "idle"))
 
@@ -346,7 +376,7 @@ def set_vehicle_value(key, label, value):
         vehicle_data[key] = build_live_item(previous, label, value, measured_at)
 
 
-def build_live_item(previous, label, value, measured_at=None, stale_after=STALE_AFTER_SECONDS):
+def build_live_item(previous, label, value, measured_at=None):
     measured_at = measured_at or time.time()
     previous = previous or {}
     is_fresh = value not in {None, "", "N/A"}
@@ -359,7 +389,7 @@ def build_live_item(previous, label, value, measured_at=None, stale_after=STALE_
         display_value = previous.get("value", "N/A")
 
     age_seconds = None if updated_epoch is None else max(0.0, measured_at - updated_epoch)
-    stale = bool(updated_epoch and age_seconds is not None and age_seconds >= stale_after)
+    stale = bool(updated_epoch and age_seconds is not None and age_seconds >= STALE_AFTER_SECONDS)
 
     return {
         "label": label,
@@ -491,8 +521,6 @@ def friendly_message(error=None, source=None, port=None):
         return "Scanner settings could not be loaded or saved."
 
     if source == "Read VIN":
-        if "incomplete vin" in message:
-            return "VIN response from the car is incomplete. Enter the VIN manually or retry with ignition on."
         return "VIN could not be read from the car. Some cars do not expose it over standard OBD."
 
     if source == "Decode VIN":
@@ -537,81 +565,26 @@ LIMITED_MODE_COMMAND_KEYS = {
     "speed",
     "coolant_temp",
     "engine_load",
-    "long_fuel_trim_1",
-    "control_voltage",
-}
-QUICK_LOOP_COMMAND_KEYS = {
-    "speed",
-}
-FAST_SENSOR_COMMAND_KEYS = {
-    "coolant_temp",
-    "engine_load",
     "throttle",
-    "intake_pressure",
-    "short_fuel_trim_1",
     "long_fuel_trim_1",
-    "maf",
     "control_voltage",
-}
-MEDIUM_SENSOR_COMMAND_KEYS = {
-    "fuel_status",
-    "oil_temp",
-    "intake_temp",
-    "fuel_pressure",
-    "barometric_pressure",
-    "timing_advance",
-    "voltage",
-}
-SLOW_SENSOR_COMMAND_KEYS = {
-    "status",
-    "ambient_temp",
-    "fuel_level",
-    "runtime",
-    "distance_mil",
-    "warmups_since_clear",
-    "distance_since_clear",
-    "time_since_clear",
 }
 RPM_COMMAND = get_command("RPM")
 SPEED_COMMAND = get_command("SPEED")
+ENGINE_LOAD_COMMAND = get_command("ENGINE_LOAD")
+THROTTLE_COMMAND = get_command("THROTTLE_POS")
+FAST_LOOP_COMMAND_KEYS = {"speed", "engine_load", "throttle"}
 
 
 def get_active_live_commands():
-    if get_limited_mode_enabled():
+    commands = {key: value for key, value in LIVE_COMMANDS.items() if key not in FAST_LOOP_COMMAND_KEYS}
+    if get_poll_profile()["limited"]:
         return {
             key: value
-            for key, value in LIVE_COMMANDS.items()
+            for key, value in commands.items()
             if key in LIMITED_MODE_COMMAND_KEYS
         }
-    return LIVE_COMMANDS
-
-
-def get_live_command_interval(key):
-    if key in QUICK_LOOP_COMMAND_KEYS:
-        return None
-    if key in FAST_SENSOR_COMMAND_KEYS:
-        return FAST_SENSOR_INTERVAL
-    if key in MEDIUM_SENSOR_COMMAND_KEYS:
-        return MEDIUM_SENSOR_INTERVAL
-    if key in SLOW_SENSOR_COMMAND_KEYS:
-        return SLOW_SENSOR_INTERVAL
-    return MEDIUM_SENSOR_INTERVAL
-
-
-def get_live_command_stale_after(key):
-    interval = get_live_command_interval(key)
-    if interval is None:
-        return STALE_AFTER_SECONDS
-    return max(STALE_AFTER_SECONDS, interval * 2.5)
-
-
-def should_poll_live_command(key, now):
-    interval = get_live_command_interval(key)
-    if interval is None:
-        return False
-
-    last_polled = last_live_command_poll.get(key)
-    return last_polled is None or (now - last_polled) >= interval
+    return commands
 
 VIN_PATTERN = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 RDW_DATASET_URL = "https://opendata.rdw.nl/resource/m9d7-ebf2.json"
@@ -986,6 +959,66 @@ def build_pid_support_summary():
     }
 
 
+def enrich_connection_quality(status, connection_quality):
+    quality = dict(connection_quality or {})
+    if status.get("demo_mode"):
+        quality["quality"] = {
+            "level": "good",
+            "label": "Demo mode",
+            "detail": "Simulated adapter and ECU are online.",
+        }
+        return quality
+
+    detected_ports = list_serial_ports()
+    selected_port = str(status.get("current_port") or get_configured_port() or "").strip().upper()
+    selected_port_present = any(
+        str(item.get("device") or "").strip().upper() == selected_port
+        for item in detected_ports
+    )
+    any_usb_serial_present = bool(detected_ports)
+
+    if selected_port_present or any_usb_serial_present:
+        quality["adapter_connected"] = True
+        quality["selected_port_present"] = bool(selected_port_present)
+        quality["detected_ports"] = detected_ports
+        if not quality.get("phase") or str(quality.get("phase")).lower() == "not connected":
+            quality["phase"] = "USB Adapter Detected"
+
+    if quality.get("live_data_active"):
+        summary = {
+            "level": "good",
+            "label": "Live ECU data",
+            "detail": "Standard OBD live data is available.",
+        }
+    elif quality.get("car_connected"):
+        summary = {
+            "level": "good",
+            "label": "ECU responding",
+            "detail": "The ECU is responding on standard OBD.",
+        }
+    elif quality.get("port_powered"):
+        summary = {
+            "level": "warning",
+            "label": "OBD port detected",
+            "detail": "The adapter sees the vehicle bus. Waiting for ECU response.",
+        }
+    elif quality.get("adapter_connected"):
+        summary = {
+            "level": "warning",
+            "label": "USB adapter connected",
+            "detail": "The USB adapter is connected. Waiting for the vehicle OBD port to wake up.",
+        }
+    else:
+        summary = {
+            "level": "info",
+            "label": "Unknown",
+            "detail": "Waiting for adapter detection.",
+        }
+
+    quality["quality"] = summary
+    return quality
+
+
 def current_scan_payload():
     with state_lock:
         status = dict(obd_status)
@@ -1011,18 +1044,7 @@ def current_scan_payload():
         if status.get("demo_mode")
         else build_connection_quality_snapshot(connection, status.get("connecting"), status.get("error"))
     )
-    if not status.get("demo_mode"):
-        selected_port = str(status.get("current_port") or "").strip().upper()
-        detected_ports = list_serial_ports()
-        selected_port_present = any(
-            str(item.get("device") or "").strip().upper() == selected_port
-            for item in detected_ports
-        )
-        if selected_port and selected_port_present:
-            connection_quality["adapter_connected"] = True
-            connection_quality["selected_port_present"] = True
-            if not connection_quality.get("phase") or str(connection_quality.get("phase")).lower() == "not connected":
-                connection_quality["phase"] = "USB Adapter Detected"
+    connection_quality = enrich_connection_quality(status, connection_quality)
     session_state = build_scanner_session_state(
         status,
         connection_quality,
@@ -1075,521 +1097,229 @@ def save_scan_snapshot(label):
     return storage_save_scan_snapshot(DB_PATH, created_at, label, summary, payload)
 
 
-def render_export_html(payload, lang="en"):
-    lang = get_language(lang)
-    if lang == "nl":
-        payload = localize_payload(payload, "nl")
+def normalize_garage_plate(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
+
+def get_recent_garage_notes(limit=SCAN_HISTORY_LIMIT):
+    return storage_get_recent_garage_notes(DB_PATH, limit)
+
+
+def filter_garage_notes(notes, vin="", plate=""):
+    vin = normalize_vin(vin)
+    plate = normalize_garage_plate(plate)
+    filtered = []
+    for item in notes:
+        item_vin = normalize_vin(item.get("vin", ""))
+        item_plate = normalize_garage_plate(item.get("plate", ""))
+        if vin and vin != item_vin:
+            continue
+        if plate and plate != item_plate:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def save_garage_note_snapshot(vin, plate, title, mileage, note):
+    payload = current_scan_payload()
+    created_at = payload["created_at"]
+    vin = normalize_vin(vin)
+    plate = normalize_garage_plate(plate)
+    return storage_save_garage_note(
+        DB_PATH,
+        created_at,
+        vin,
+        plate,
+        title.strip() or "Garage note",
+        mileage.strip() or "--",
+        note.strip(),
+        payload,
+    )
+
+
+def render_export_html(payload):
     status = payload.get("status", {})
     vehicle = payload.get("vehicle", {})
     dtc = payload.get("dtc", {})
-    vehicle_profile = payload.get("vehicle_profile", {})
-    connection_quality = payload.get("connection_quality", {})
-    freeze_frame = payload.get("freeze_frame", {})
     health = payload.get("health", {})
     battery = payload.get("battery_check", {})
     readiness = payload.get("readiness", {})
-    simple_summary = payload.get("simple_summary", {})
-    pid_support = payload.get("pid_support", {})
     report = payload.get("report", {})
-    created_at = payload.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S")
-    export_mode = payload.get("export_mode") or "Live snapshot"
-
-    labels = {
-        "en": {
-            "title": "OBD Scan Report",
-            "subtitle": "Vehicle diagnostic snapshot",
-            "live_snapshot": "Live snapshot",
-            "paused_snapshot": "Paused stream snapshot",
-            "generated": "Generated",
-            "standard": "Standard OBD-II",
-            "connection": "Connection",
-            "connected": "Connected",
-            "not_connected": "Not connected",
-            "protocol": "Protocol",
-            "port": "Port",
-            "health_score": "Health score",
-            "battery": "Battery / charging",
-            "speed": "Speed",
-            "dtcs": "DTCs",
-            "stored": "Stored",
-            "pending": "Pending",
-            "permanent": "Permanent",
-            "vehicle_identity": "Vehicle Identity",
-            "connection_quality": "Connection Quality",
-            "phase": "Phase",
-            "adapter_connected": "Adapter connected",
-            "obd_port_powered": "OBD port powered",
-            "ecu_responding": "ECU responding",
-            "live_data_active": "Live data active",
-            "yes": "Yes",
-            "no": "No",
-            "health_checklist": "Health Checklist",
-            "simple_summary": "Simple Summary",
-            "summary": "Summary",
-            "all_live_data": "All Live OBD Data",
-            "stored_codes": "Stored Codes",
-            "pending_codes": "Pending Codes",
-            "permanent_codes": "Permanent Codes",
-            "readiness": "Readiness Monitors",
-            "freeze_frame": "Freeze Frame",
-            "pid_support": "PID Support",
-            "report_details": "Report Details",
-            "no_data": "No data available",
-            "no_codes": "No codes.",
-            "no_report": "No report details available.",
-            "ready": "Ready",
-            "incomplete": "Incomplete",
-            "updated": "updated",
-            "footer": "Standard OBD-II only. ABS, airbag, BCM, odometer and brand-specific modules may require manufacturer-specific diagnostics. Use this report as a snapshot, not as a complete vehicle inspection.",
-            "code": "Code",
-            "description": "Description",
-            "system": "System",
-            "severity": "Severity",
-            "causes": "Possible causes",
-            "action": "Action",
-            "status": "Status",
-            "headline": "Headline",
-            "detail": "Detail",
-            "voltage": "Voltage",
-            "ecu_voltage": "ECU voltage",
-            "adapter_voltage": "Adapter voltage",
-            "engine_running": "Engine running",
-            "total_checked": "Total checked",
-            "supported": "Supported",
-            "unsupported": "Unsupported",
-            "make": "Make",
-            "model": "Model",
-            "model_year": "Model year",
-            "fuel": "Fuel",
-            "engine": "Engine",
-            "plate": "Plate",
-            "apk_expiry": "APK expiry",
-            "first_registration": "First registration",
-            "vin_status": "VIN status",
-        },
-        "nl": {
-            "title": "OBD Scanrapport",
-            "subtitle": "Diagnose snapshot van het voertuig",
-            "live_snapshot": "Live momentopname",
-            "paused_snapshot": "Gepauzeerde stream snapshot",
-            "generated": "Gegenereerd",
-            "standard": "Alleen standaard OBD-II",
-            "connection": "Verbinding",
-            "connected": "Verbonden",
-            "not_connected": "Niet verbonden",
-            "protocol": "Protocol",
-            "port": "Poort",
-            "health_score": "Gezondheidsscore",
-            "battery": "Accu / laden",
-            "speed": "Snelheid",
-            "dtcs": "Foutcodes",
-            "stored": "Stored",
-            "pending": "Pending",
-            "permanent": "Permanent",
-            "vehicle_identity": "Voertuigidentiteit",
-            "connection_quality": "Verbindingskwaliteit",
-            "phase": "Fase",
-            "adapter_connected": "Adapter verbonden",
-            "obd_port_powered": "OBD-poort actief",
-            "ecu_responding": "ECU reageert",
-            "live_data_active": "Live data actief",
-            "yes": "Ja",
-            "no": "Nee",
-            "health_checklist": "Gezondheidschecklist",
-            "simple_summary": "Simpele samenvatting",
-            "summary": "Samenvatting",
-            "all_live_data": "Alle live OBD-data",
-            "stored_codes": "Stored codes",
-            "pending_codes": "Pending codes",
-            "permanent_codes": "Permanent codes",
-            "readiness": "Readiness monitors",
-            "freeze_frame": "Freeze Frame",
-            "pid_support": "PID-ondersteuning",
-            "report_details": "Rapportdetails",
-            "no_data": "Geen data beschikbaar",
-            "no_codes": "Geen codes.",
-            "no_report": "Geen rapportdetails beschikbaar.",
-            "ready": "Klaar",
-            "incomplete": "Incompleet",
-            "updated": "bijgewerkt",
-            "footer": "Alleen standaard OBD-II. ABS, airbag, BCM, kilometerstand en merk-specifieke modules vereisen mogelijk fabrikant-specifieke diagnose. Gebruik dit rapport als snapshot, niet als volledige aankoopkeuring.",
-            "code": "Code",
-            "description": "Beschrijving",
-            "system": "Systeem",
-            "severity": "Ernst",
-            "causes": "Mogelijke oorzaken",
-            "action": "Actie",
-            "status": "Status",
-            "headline": "Kop",
-            "detail": "Detail",
-            "voltage": "Spanning",
-            "ecu_voltage": "ECU-spanning",
-            "adapter_voltage": "Adapterspanning",
-            "engine_running": "Motor draait",
-            "total_checked": "Totaal gecheckt",
-            "supported": "Ondersteund",
-            "unsupported": "Niet ondersteund",
-            "make": "Merk",
-            "model": "Model",
-            "model_year": "Modeljaar",
-            "fuel": "Brandstof",
-            "engine": "Motor",
-            "plate": "Kenteken",
-            "apk_expiry": "APK vervaldatum",
-            "first_registration": "Eerste toelating",
-            "vin_status": "VIN-status",
-        },
-    }[lang]
-
-    def text(key):
-        return labels.get(key, key)
-
-    if export_mode == "Live snapshot":
-        export_mode = text("live_snapshot")
-    elif export_mode == "Paused stream snapshot":
-        export_mode = text("paused_snapshot")
-
-    def format_export_value(value):
-        if value in (None, ""):
-            return "--"
-        formatted = str(value).strip()
-
-        def rpm_number(match):
-            try:
-                number = float(match.group(1).replace(",", "."))
-            except (TypeError, ValueError):
-                return f"{match.group(1)} RPM"
-            return f"{number:.1f} RPM"
-
-        formatted = re.sub(
-            r"(-?\d+(?:[.,]\d+)?)\s*(?:revolutions?_per_minute|revolutions?\s*/\s*minute|revolutions?\s+per\s+minute|rpm)\b",
-            lambda match: rpm_number(match),
-            formatted,
-            flags=re.IGNORECASE,
-        )
-        replacements = [
-            (r"\brevolutions_per_minute\b", "RPM"),
-            (r"\brevolution_per_minute\b", "RPM"),
-            (r"\brevolutions?\s*/\s*minute\b", "RPM"),
-            (r"\brevolutions?\s+per\s+minute\b", "RPM"),
-            (r"\brpm\b", "RPM"),
-            (r"\bkilometer / hour\b", "km/h"),
-            (r"\bkilometer/hour\b", "km/h"),
-            (r"\bkilometer_per_hour\b", "km/h"),
-            (r"\bdegree_Celsius\b", "C"),
-            (r"\bpercent\b", "%"),
-            (r"\bkilopascal\b", "kPa"),
-            (r"\bgram / second\b", "g/s"),
-            (r"\bgram/second\b", "g/s"),
-            (r"\bvolt\b", "V"),
-            (r"\bsecond\b", "s"),
-        ]
-        for pattern, replacement in replacements:
-            formatted = re.sub(pattern, replacement, formatted, flags=re.IGNORECASE)
-        formatted = re.sub(r"\s+", " ", formatted)
-        return formatted
 
     def row(label, value):
-        safe_value = format_export_value(value)
+        safe_value = value if value not in (None, "") else "--"
         return f"<tr><th>{escape(str(label))}</th><td>{escape(str(safe_value))}</td></tr>"
-
-    def card(label, value, tone=""):
-        safe_value = format_export_value(value)
-        return (
-            f'<div class="metric-card {escape(tone)}">'
-            f"<span>{escape(str(label))}</span>"
-            f"<strong>{escape(str(safe_value))}</strong>"
-            "</div>"
-        )
-
-    def section(title, body, class_name=""):
-        return (
-            f'<section class="report-card {escape(class_name)}">'
-            f"<h2>{escape(title)}</h2>"
-            f"{body}"
-            "</section>"
-        )
-
-    def table_from_items(items, empty_label="No data available"):
-        rows = "".join(row(label, value) for label, value in items)
-        return f"<table>{rows or row(empty_label, '--')}</table>"
-
-    def vehicle_rows():
-        if not vehicle:
-            return row(text("all_live_data"), text("no_data"))
-
-        rows = []
-        preferred = [
-            "rpm",
-            "speed",
-            "coolant_temp",
-            "control_voltage",
-            "engine_load",
-            "throttle",
-            "long_fuel_trim_1",
-            "short_fuel_trim_1",
-            "fuel_status",
-            "maf",
-            "intake_pressure",
-            "fuel_pressure",
-            "fuel_level",
-            "runtime",
-            "distance_mil",
-            "warmups_since_clear",
-            "distance_since_clear",
-            "time_since_clear",
-            "oil_temp",
-            "intake_temp",
-            "ambient_temp",
-            "barometric_pressure",
-            "timing_advance",
-            "voltage",
-            "status",
-        ]
-        ordered_keys = [key for key in preferred if key in vehicle] + sorted(key for key in vehicle if key not in preferred)
-        for key in ordered_keys:
-            item = vehicle.get(key, {})
-            label = item.get("label") or key.replace("_", " ").title()
-            value = item.get("value", "--")
-            updated = item.get("updated_at")
-            suffix = f" ({text('updated')} {updated})" if updated and updated != "--" else ""
-            rows.append(row(label, f"{value}{suffix}"))
-        return "".join(rows)
 
     def code_rows(title, codes):
         if not codes:
-            return section(title, f'<p class="empty">{escape(text("no_codes"))}</p>')
+            return f"<h2>{escape(title)}</h2><p>No codes.</p>"
         rows = []
         for item in codes:
             causes = ", ".join(item.get("possible_causes") or [])
-            action = item.get("action_hint") or ""
             rows.append(
-            "<tr>"
+                "<tr>"
                 f"<td>{escape(item.get('code', '--'))}</td>"
                 f"<td>{escape(item.get('description_en') or item.get('description') or '--')}</td>"
                 f"<td>{escape(item.get('system') or '--')}</td>"
                 f"<td>{escape(item.get('severity') or '--')}</td>"
                 f"<td>{escape(causes or '--')}</td>"
-                f"<td>{escape(action or '--')}</td>"
                 "</tr>"
             )
-        return section(
-            title,
-            f"<table><thead><tr><th>{escape(text('code'))}</th><th>{escape(text('description'))}</th><th>{escape(text('system'))}</th><th>{escape(text('severity'))}</th><th>{escape(text('causes'))}</th><th>{escape(text('action'))}</th></tr></thead>"
-            f"<tbody>{''.join(rows)}</tbody></table>",
+        return (
+            f"<h2>{escape(title)}</h2>"
+            "<table><thead><tr><th>Code</th><th>Description</th><th>System</th><th>Severity</th><th>Possible causes</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
         )
 
     readiness_items = readiness.get("monitors", []) if readiness.get("available") else []
     readiness_rows = "".join(
-        row(item.get("name", "Monitor"), text("ready") if item.get("complete") else text("incomplete"))
+        row(item.get("name", "Monitor"), "Ready" if item.get("complete") else "Incomplete")
         for item in readiness_items
-    ) or row(text("readiness"), text("no_data"))
-
-    checklist_rows = "".join(
-        f'<li class="{escape(item.get("level", "info"))}"><strong>{escape(item.get("title", "Check"))}</strong><span>{escape(item.get("detail", ""))}</span></li>'
-        for item in health.get("checklist", [])
-    ) or f'<li class="info"><strong>{escape(text("no_data"))}</strong><span>{escape(text("no_data"))}</span></li>'
-
-    simple_rows = "".join(
-        f"<li>{escape(str(item))}</li>"
-        for item in simple_summary.get("items", [])
-    ) or f"<li>{escape(text('no_data'))}</li>"
-
-    freeze_rows = "".join(
-        row(key.replace("_", " ").title(), value)
-        for key, value in (freeze_frame.get("values") or {}).items()
-    ) or row(text("freeze_frame"), text("no_data"))
-
-    decoded = vehicle_profile.get("decoded") or {}
-    rdw = vehicle_profile.get("rdw") or {}
-    vehicle_identity = [
-        ("VIN", vehicle_profile.get("vin")),
-        (text("vin_status"), vehicle_profile.get("vin_status")),
-        (text("make"), decoded.get("make") or rdw.get("brand")),
-        (text("model"), decoded.get("model") or rdw.get("model")),
-        (text("model_year"), decoded.get("model_year")),
-        (text("fuel"), decoded.get("fuel_type") or rdw.get("fuel")),
-        (text("engine"), decoded.get("engine_summary") or rdw.get("engine_cc")),
-        (text("plate"), rdw.get("plate") or vehicle_profile.get("plate_query")),
-        (text("apk_expiry"), rdw.get("apk_expiry")),
-        (text("first_registration"), rdw.get("first_registration")),
-    ]
+    ) or row("Readiness", "No readiness data available")
 
     report_sections = "".join(
-        f'<div class="detail-block"><h3>{escape(section.get("title", "Section"))}</h3><ul>'
+        f"<h3>{escape(section.get('title', 'Section'))}</h3><ul>"
         + "".join(f"<li>{escape(str(item))}</li>" for item in section.get("items", []))
-        + "</ul></div>"
+        + "</ul>"
         for section in report.get("sections", [])
     )
 
-    overview_cards = "".join([
-        card(text("connection"), text("connected") if status.get("connected") else text("not_connected"), "good" if status.get("connected") else "warning"),
-        card(text("protocol"), status.get("protocol", "Unknown")),
-        card(text("port"), status.get("current_port") or "auto"),
-        card(text("health_score"), health.get("score", "--"), health.get("status", "")),
-        card("RPM", vehicle.get("rpm", {}).get("value", "--")),
-        card(text("speed"), vehicle.get("speed", {}).get("value", "--")),
-        card(text("battery"), battery.get("headline", "--"), battery.get("status", "")),
-        card(text("dtcs"), f"{len(dtc.get('stored', []))} {text('stored')} / {len(dtc.get('pending', []))} {text('pending')} / {len(dtc.get('permanent', []))} {text('permanent')}"),
-    ])
-
     return f"""<!doctype html>
-<html lang="{escape(lang)}">
+<html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape(text('title'))} {escape(created_at)}</title>
+  <title>OBD Scan Report {escape(payload.get('created_at', ''))}</title>
   <style>
-    :root {{
-      color-scheme: light;
-      --bg: #07111f;
-      --screen: #0d1827;
-      --ink: #e8f1fb;
-      --muted: #91a4b9;
-      --line: rgba(148, 163, 184, .22);
-      --panel: #111f31;
-      --soft: #16283d;
-      --brand: #38bdf8;
-      --accent: #22c55e;
-      --good: #22c55e;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --info: #60a5fa;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background: radial-gradient(circle at top left, #123a55, var(--bg) 42%);
-      color: var(--ink);
-      font-family: Inter, Segoe UI, Arial, Helvetica, sans-serif;
-      line-height: 1.45;
-    }}
-    .page {{ max-width: 1220px; margin: 0 auto; padding: 28px; }}
-    .hero {{
-      background: linear-gradient(135deg, rgba(56,189,248,.22), rgba(34,197,94,.12)), var(--screen);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 26px;
-      margin-bottom: 14px;
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 18px;
-    }}
-    .hero p {{ color: var(--muted); margin: 6px 0 0; }}
-    .hero-mark {{ width: 92px; height: 92px; border: 1px solid var(--line); border-radius: 8px; display: grid; place-items: center; color: var(--brand); font-weight: 800; letter-spacing: .08em; background: rgba(15,23,42,.55); }}
-    .hero-meta {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }}
-    .hero-meta span {{ border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: rgba(15,23,42,.55); color: #cbd5e1; }}
-    h1, h2, h3 {{ margin: 0 0 10px; }}
-    h1 {{ font-size: 32px; letter-spacing: 0; }}
-    h2 {{ font-size: 18px; }}
-    h3 {{ font-size: 15px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }}
-    .metric-card, .report-card {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: 0 18px 44px rgba(0, 0, 0, .22);
-    }}
-    .metric-card {{ padding: 15px; min-height: 90px; border-top: 3px solid rgba(56,189,248,.55); }}
-    .metric-card span {{ display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }}
-    .metric-card strong {{ display: block; margin-top: 8px; font-size: 20px; overflow-wrap: anywhere; }}
-    .metric-card.good strong {{ color: var(--good); }}
-    .metric-card.warning strong {{ color: var(--warning); }}
-    .metric-card.danger strong {{ color: var(--danger); }}
-    .report-card {{ padding: 20px; margin-bottom: 14px; }}
-    .report-card h2 {{ border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 12px; color: #f8fafc; }}
-    .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; overflow: hidden; border-radius: 10px; }}
-    th, td {{ border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; color: #dbeafe; }}
-    th {{ background: var(--soft); width: 235px; color: #93c5fd; font-weight: 700; }}
-    thead th {{ background: #172b42; color: #bfdbfe; }}
-    tr:last-child th, tr:last-child td {{ border-bottom: 0; }}
-    .checklist, .simple-list {{ margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }}
-    .checklist li, .simple-list li {{ border: 1px solid var(--line); border-left-width: 5px; border-radius: 8px; padding: 12px; background: #0c1726; }}
-    .checklist li span {{ display: block; color: var(--muted); margin-top: 4px; }}
-    .checklist .good {{ border-left-color: var(--good); }}
-    .checklist .warning {{ border-left-color: var(--warning); }}
-    .checklist .danger {{ border-left-color: var(--danger); }}
-    .checklist .info {{ border-left-color: var(--info); }}
-    .detail-block {{ border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-top: 12px; background: #0c1726; }}
-    .detail-block ul {{ margin: 8px 0 0; padding-left: 20px; }}
-    .empty, .note {{ color: var(--muted); }}
-    .footer {{ color: var(--muted); font-size: 13px; margin-top: 22px; }}
-    @media print {{
-      body {{ background: white; color: #111827; }}
-      .page {{ padding: 0; }}
-      .hero, .metric-card, .report-card {{ box-shadow: none; }}
-      .hero, .metric-card, .report-card, .detail-block, .checklist li, .simple-list li {{ background: white; color: #111827; }}
-      th, td {{ color: #111827; }}
-      .hero-mark {{ display: none; }}
-    }}
-    @media (max-width: 850px) {{
-      .page {{ padding: 18px; }}
-      .grid, .two-col, .hero {{ grid-template-columns: 1fr; }}
-    }}
+    body {{ font-family: Arial, sans-serif; color: #172033; margin: 32px; }}
+    h1, h2, h3 {{ margin-bottom: 8px; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 12px 0 24px; }}
+    th, td {{ border: 1px solid #d6dee8; padding: 8px 10px; text-align: left; vertical-align: top; }}
+    th {{ background: #f1f5f9; width: 220px; }}
+    .note {{ color: #627286; }}
   </style>
 </head>
 <body>
-  <main class="page">
-    <header class="hero">
-      <div>
-        <h1>{escape(text('title'))}</h1>
-        <p>{escape(report.get('headline') or health.get('headline') or text('subtitle'))}</p>
-        <div class="hero-meta">
-          <span>{escape(text('generated'))} {escape(created_at)}</span>
-          <span>{escape(export_mode)}</span>
-          <span>Car-OBD-Diagnostics {escape(APP_VERSION)}</span>
-          <span>{escape(text('standard'))}</span>
-        </div>
-      </div>
-      <div class="hero-mark">OBD</div>
-    </header>
+  <h1>OBD Scan Report</h1>
+  <p class="note">Generated by OBD-scanner-Python {escape(APP_VERSION)} at {escape(payload.get('created_at', '--'))}</p>
+  <h2>Overview</h2>
+  <table>
+    {row('Connection', 'Connected' if status.get('connected') else 'Not connected')}
+    {row('Protocol', status.get('protocol', 'Unknown'))}
+    {row('Port', status.get('current_port') or 'auto')}
+    {row('Health score', health.get('score', '--'))}
+    {row('Health verdict', health.get('headline', '--'))}
+    {row('Battery / charging', battery.get('headline', '--'))}
+  </table>
+  <h2>Live Highlights</h2>
+  <table>
+    {row('RPM', vehicle.get('rpm', {}).get('value', '--'))}
+    {row('Speed', vehicle.get('speed', {}).get('value', '--'))}
+    {row('Coolant temp', vehicle.get('coolant_temp', {}).get('value', '--'))}
+    {row('ECU voltage', vehicle.get('control_voltage', {}).get('value', '--'))}
+    {row('Long fuel trim bank 1', vehicle.get('long_fuel_trim_1', {}).get('value', '--'))}
+  </table>
+  {code_rows('Stored Codes', dtc.get('stored', []))}
+  {code_rows('Pending Codes', dtc.get('pending', []))}
+  {code_rows('Permanent Codes', dtc.get('permanent', []))}
+  <h2>Readiness</h2>
+  <table>{readiness_rows}</table>
+  <h2>Report Details</h2>
+  {report_sections or '<p>No report details available.</p>'}
+  <p class="note">Standard OBD-II only. ABS, airbag and body modules may require brand-specific diagnostics.</p>
+</body>
+</html>"""
 
-    <div class="grid">{overview_cards}</div>
 
-    <div class="two-col">
-      {section(text('vehicle_identity'), table_from_items(vehicle_identity))}
-      {section(text('connection_quality'), table_from_items([
-        (text('phase'), connection_quality.get('phase')),
-        (text('adapter_connected'), text('yes') if connection_quality.get('adapter_connected') else text('no')),
-        (text('obd_port_powered'), text('yes') if connection_quality.get('port_powered') else text('no')),
-        (text('ecu_responding'), text('yes') if connection_quality.get('car_connected') else text('no')),
-        (text('live_data_active'), text('yes') if connection_quality.get('live_data_active') else text('no')),
-      ]))}
-    </div>
+def render_garage_notes_export_html(notes, vin="", plate=""):
+    vin = normalize_vin(vin)
+    plate = normalize_garage_plate(plate)
+    generated_at = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    {section(text('health_checklist'), f'<ul class="checklist">{checklist_rows}</ul>')}
-    {section(text('simple_summary'), f'<h3>{escape(simple_summary.get("headline") or text("summary"))}</h3><ul class="simple-list">{simple_rows}</ul>')}
-    {section(text('all_live_data'), f'<table>{vehicle_rows()}</table>')}
-    {code_rows(text('stored_codes'), dtc.get('stored', []))}
-    {code_rows(text('pending_codes'), dtc.get('pending', []))}
-    {code_rows(text('permanent_codes'), dtc.get('permanent', []))}
+    def metric(label, value):
+        return (
+            '<div class="metric">'
+            f"<span>{escape(str(label))}</span>"
+            f"<strong>{escape(str(value or '--'))}</strong>"
+            "</div>"
+        )
 
-    <div class="two-col">
-      {section(text('readiness'), f'<table>{readiness_rows}</table>')}
-      {section(text('freeze_frame'), f'<table>{freeze_rows}</table>')}
-    </div>
+    def note_card(item):
+        payload = item.get("payload") or {}
+        health = payload.get("health") or {}
+        status = payload.get("status") or {}
+        vehicle = payload.get("vehicle") or {}
+        return f"""
+        <article class="note-card">
+          <div class="note-head">
+            <div>
+              <span>{escape(item.get('created_at', '--'))}</span>
+              <h2>{escape(item.get('title') or 'Garage note')}</h2>
+            </div>
+            <strong>{escape(item.get('mileage') or '--')}</strong>
+          </div>
+          <div class="identity-row">
+            <span>VIN: {escape(item.get('vin') or '--')}</span>
+            <span>Plate: {escape(item.get('plate') or '--')}</span>
+          </div>
+          <p class="note-text">{escape(item.get('note') or '')}</p>
+          <div class="metric-grid">
+            {metric('Health score', health.get('score', '--'))}
+            {metric('Protocol', status.get('protocol', 'Unknown'))}
+            {metric('RPM', (vehicle.get('rpm') or {}).get('value', '--'))}
+            {metric('Speed', (vehicle.get('speed') or {}).get('value', '--'))}
+          </div>
+        </article>
+        """
 
-    <div class="two-col">
-      {section(text('battery'), table_from_items([
-        (text('status'), battery.get('status')),
-        (text('headline'), battery.get('headline')),
-        (text('detail'), battery.get('detail')),
-        (text('voltage'), battery.get('voltage')),
-        (text('ecu_voltage'), battery.get('ecu_voltage')),
-        (text('adapter_voltage'), battery.get('adapter_voltage')),
-        (text('engine_running'), text('yes') if battery.get('running') else text('no')),
-      ]))}
-      {section(text('pid_support'), table_from_items([
-        (text('total_checked'), pid_support.get('total')),
-        (text('supported'), pid_support.get('supported_count')),
-        (text('unsupported'), pid_support.get('unsupported_count')),
-      ]))}
-    </div>
-
-    {section(text('report_details'), report_sections or f'<p class="empty">{escape(text("no_report"))}</p>')}
-    <p class="footer">{escape(text('footer'))}</p>
+    cards = "\n".join(note_card(item) for item in notes) or '<p class="empty">No garage notes found for this filter.</p>'
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Garage Notes Export</title>
+  <style>
+    :root {{ color-scheme: light; --blue:#0d6efd; --text:#172033; --muted:#64748b; --line:#d6e0ec; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; background: #eef4fb; color: var(--text); font-family: Segoe UI, Arial, sans-serif; }}
+    .hero {{ background: linear-gradient(135deg, #0d6efd, #153e9f); color: #fff; padding: 34px 40px; }}
+    .hero span {{ display:block; font-size:12px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; opacity:.86; }}
+    .hero h1 {{ margin: 8px 0 10px; font-size: 34px; }}
+    .hero p {{ margin: 0; opacity: .9; }}
+    main {{ max-width: 1120px; margin: 0 auto; padding: 26px; }}
+    .summary {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-top: -48px; margin-bottom: 18px; }}
+    .metric, .note-card {{ background: rgba(255,255,255,.96); border:1px solid var(--line); border-radius:18px; box-shadow:0 16px 40px rgba(40,68,110,.10); }}
+    .metric {{ padding: 16px; }}
+    .metric span {{ display:block; color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; }}
+    .metric strong {{ display:block; margin-top:6px; font-size:20px; }}
+    .note-card {{ margin: 14px 0; padding: 20px; }}
+    .note-head {{ display:flex; justify-content:space-between; gap:16px; border-bottom:1px solid var(--line); padding-bottom:14px; }}
+    .note-head span, .identity-row, .note-text {{ color: var(--muted); }}
+    .note-head h2 {{ margin:4px 0 0; font-size:24px; }}
+    .identity-row {{ display:flex; flex-wrap:wrap; gap:10px; margin:14px 0; font-weight:700; }}
+    .identity-row span {{ background:#edf5ff; border:1px solid #cfe2ff; border-radius:999px; padding:7px 10px; }}
+    .note-text {{ white-space:pre-wrap; line-height:1.55; }}
+    .metric-grid {{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-top:16px; }}
+    .empty {{ background:#fff; border:1px dashed var(--line); border-radius:18px; padding:20px; color:var(--muted); }}
+    footer {{ color: var(--muted); margin: 24px 0; font-size: 13px; }}
+    @media (max-width: 760px) {{ .summary, .metric-grid {{ grid-template-columns:1fr; }} .hero {{ padding:26px 22px; }} main {{ padding:18px; }} }}
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <span>Car-OBD-Diagnostics {escape(APP_VERSION)}</span>
+    <h1>Garage Notes Export</h1>
+    <p>Generated at {escape(generated_at)}</p>
+  </section>
+  <main>
+    <section class="summary">
+      {metric('Notes', len(notes))}
+      {metric('VIN filter', vin or 'All')}
+      {metric('Plate filter', plate or 'All')}
+      {metric('Generated', generated_at)}
+    </section>
+    {cards}
+    <footer>Use this software at your own risk. Licensed under GNU GPLv3.</footer>
   </main>
 </body>
 </html>"""
@@ -1599,47 +1329,17 @@ def get_recent_scans(limit=SCAN_HISTORY_LIMIT):
     return storage_get_recent_scans(DB_PATH, limit)
 
 
-def close_current_connection():
-    global connection
-
-    try:
-        with obd_lock:
-            if connection:
-                connection.close()
-    except Exception as e:
-        log_error("Close OBD connection", e)
-    finally:
-        connection = None
-
-
-def open_obd_connection(port):
-    if port:
-        return obd.OBD(
-            port,
-            fast=False,
-            timeout=OBD_CONNECT_TIMEOUT,
-            check_voltage=False,
-        )
-
-    return obd.OBD(
-        fast=False,
-        timeout=OBD_CONNECT_TIMEOUT,
-        check_voltage=False,
-    )
-
-
 def connect_obd():
-    global connection, query_error_streak, current_live_poll_interval, last_live_command_poll
+    global connection, query_error_streak, current_live_poll_interval
 
     with connect_lock:
         try:
             query_error_streak = 0
             current_live_poll_interval = POLL_INTERVAL
-            last_live_command_poll = {}
             demo_mode = get_demo_mode_enabled()
             with state_lock:
                 obd_status["demo_mode"] = demo_mode
-                obd_status["limited_mode"] = get_limited_mode_enabled()
+                obd_status["limited_mode"] = bool(get_poll_profile()["limited"])
                 obd_status["poll_interval"] = POLL_INTERVAL
                 obd_status["poll_guard_active"] = False
                 obd_status["poll_guard_reason"] = ""
@@ -1686,50 +1386,14 @@ def connect_obd():
 
             print("Connecting OBD...")
 
-            close_current_connection()
-
-            new_connection = None
-            last_error = None
-            attempts = max(1, int(OBD_CONNECT_ATTEMPTS or 1))
-
-            for attempt in range(1, attempts + 1):
-                with state_lock:
-                    obd_status["user_message"] = (
-                        f"Connecting to {port}... attempt {attempt}/{attempts}"
-                        if port
-                        else f"Searching for OBD adapter... attempt {attempt}/{attempts}"
-                    )
-                    obd_status["last_update"] = time.strftime("%H:%M:%S")
-
-                try:
-                    new_connection = open_obd_connection(port)
-                    connection = new_connection
-
-                    if new_connection and new_connection.is_connected():
-                        break
-
-                    with state_lock:
-                        obd_status["connection_hint"] = detect_connection_hint(new_connection, None)
-                    if attempt < attempts:
-                        time.sleep(OBD_CONNECT_RETRY_DELAY)
-                except Exception as e:
-                    last_error = e
-                    try:
-                        if new_connection:
-                            new_connection.close()
-                    except Exception:
-                        pass
-                    new_connection = None
-                    connection = None
-                    if attempt < attempts:
-                        time.sleep(OBD_CONNECT_RETRY_DELAY)
-
-            if new_connection is None and last_error:
-                raise last_error
+            if port:
+                new_connection = obd.OBD(port, fast=False)
+            else:
+                new_connection = obd.OBD(fast=False)
 
             connection = new_connection
 
-            if new_connection and new_connection.is_connected():
+            if new_connection.is_connected():
                 protocol = new_connection.protocol_name()
                 set_status(
                     True,
@@ -1739,23 +1403,13 @@ def connect_obd():
                 )
                 print("Connected:", protocol, "port:", port or "auto")
             else:
-                phase = "Not Connected"
-                try:
-                    if new_connection:
-                        phase = str(new_connection.status())
-                except Exception:
-                    pass
                 set_status(
                     False,
-                    error=f"No OBD connection found. Adapter phase: {phase}",
-                    user_message=(
-                        "Adapter detected, but the ECU did not respond yet. Keep ignition on and retry."
-                        if phase and phase != "Not Connected"
-                        else friendly_message("No OBD connection found.", source="Connect OBD", port=port)
-                    ),
+                    error="No OBD connection found.",
+                    user_message=friendly_message("No OBD connection found.", source="Connect OBD", port=port),
                     connecting=False
                 )
-                print("No OBD connection. phase:", phase)
+                print("No OBD connection.")
 
             with state_lock:
                 obd_status["connection_hint"] = detect_connection_hint(connection, obd_status.get("error"))
@@ -1778,7 +1432,7 @@ def set_status(connected, protocol=None, error=None, user_message=None, connecti
         obd_status["connected"] = connected
         obd_status["protocol"] = protocol or "Unknown"
         obd_status["error"] = error
-        obd_status["limited_mode"] = get_limited_mode_enabled()
+        obd_status["limited_mode"] = bool(get_poll_profile()["limited"])
         if user_message is not None:
             obd_status["user_message"] = user_message
         if connecting is not None:
@@ -1787,40 +1441,6 @@ def set_status(connected, protocol=None, error=None, user_message=None, connecti
         obd_status["connection_hint"] = detect_connection_hint(connection, error, obd_status.get("demo_mode", False))
         if connected:
             obd_status["last_successful_update"] = obd_status["last_update"]
-
-
-def simplify_obd_value(value):
-    if isinstance(value, (list, tuple, set)):
-        simplified_parts = []
-        seen = set()
-        for item in value:
-            simplified = simplify_obd_value(item)
-            if simplified in {"", "N/A"} or simplified in seen:
-                continue
-            seen.add(simplified)
-            simplified_parts.append(simplified)
-        return " / ".join(simplified_parts) if simplified_parts else "N/A"
-
-    if value is None:
-        return "N/A"
-
-    text = str(value).strip()
-    lower_text = text.lower()
-
-    if "closed loop" in lower_text:
-        if "using oxygen sensor feedback" in lower_text or lower_text == "closed loop":
-            return "Closed loop"
-        if "trim compensating" in lower_text:
-            return "Closed loop / trim compensating"
-
-    if "open loop" in lower_text:
-        if "engine load" in lower_text:
-            return "Open loop - engine load"
-        if "fuel cut" in lower_text or "deceleration" in lower_text:
-            return "Open loop - fuel cut"
-        return "Open loop"
-
-    return text or "N/A"
 
 
 def safe_query(command):
@@ -1841,7 +1461,7 @@ def safe_query(command):
             return "N/A"
 
         apply_poll_guard_success()
-        return simplify_obd_value(response.value)
+        return str(response.value)
 
     except Exception as e:
         apply_poll_guard_error()
@@ -1866,52 +1486,9 @@ def normalize_vin(raw_value):
     if raw_value is None:
         return ""
 
-    sources = []
-    if isinstance(raw_value, (bytes, bytearray)):
-        sources.append(bytes(raw_value).decode("ascii", errors="ignore"))
-    elif isinstance(raw_value, (list, tuple, set)):
-        sources.extend(str(item) for item in raw_value)
-    else:
-        sources.append(str(raw_value))
-
-    expanded_sources = []
-    for source in sources:
-        expanded_sources.append(source)
-        expanded_sources.extend(re.findall(r"b?['\"]([^'\"]+)['\"]", source))
-
-    for source in expanded_sources:
-        compact = re.sub(r"[^A-Za-z0-9]", "", source.upper())
-        for candidate in VIN_PATTERN.findall(compact):
-            if candidate.startswith(("BYTEARRAY", "OBDRESPONSE")):
-                continue
-            return candidate
-
-    return ""
-
-
-def best_vin_candidate(raw_value):
-    if raw_value is None:
-        return ""
-
-    sources = []
-    if isinstance(raw_value, (bytes, bytearray)):
-        sources.append(bytes(raw_value).decode("ascii", errors="ignore"))
-    elif isinstance(raw_value, (list, tuple, set)):
-        sources.extend(str(item) for item in raw_value)
-    else:
-        sources.append(str(raw_value))
-
-    candidates = []
-    for source in sources:
-        expanded = [source, *re.findall(r"b?['\"]([^'\"]+)['\"]", source)]
-        for item in expanded:
-            compact = re.sub(r"[^A-Za-z0-9]", "", item.upper())
-            if compact.startswith(("BYTEARRAY", "OBDRESPONSE")):
-                continue
-            if 10 <= len(compact) <= 17:
-                candidates.append(compact)
-
-    return max(candidates, key=len) if candidates else ""
+    compact = re.sub(r"[^A-Za-z0-9]", "", str(raw_value).upper())
+    match = VIN_PATTERN.search(compact)
+    return match.group(0) if match else ""
 
 
 def read_vin():
@@ -1932,9 +1509,6 @@ def read_vin():
     vin = normalize_vin(response.value)
 
     if not vin:
-        candidate = best_vin_candidate(response.value)
-        if candidate and len(candidate) < 17:
-            raise RuntimeError(f"Incomplete VIN response ({len(candidate)}/17 characters): {candidate}")
         raise RuntimeError(f"Could not parse VIN from response: {response.value}")
 
     return vin
@@ -2500,7 +2074,7 @@ def update_loop():
                     if not vehicle_profile.get("vin"):
                         vehicle_profile.update(build_demo_vehicle_profile())
 
-                time.sleep(RPM_POLL_INTERVAL)
+                time.sleep(POLL_INTERVAL)
                 continue
 
             if not connection or not connection.is_connected():
@@ -2526,25 +2100,10 @@ def update_loop():
 
             for key, item in get_active_live_commands().items():
                 label, command = item
-                previous_item = previous_data.get(key)
-                stale_after = get_live_command_stale_after(key)
-
-                if should_poll_live_command(key, cycle_time):
-                    value = safe_query(command)
-                    last_live_command_poll[key] = cycle_time
-                    data[key] = build_live_item(previous_item, label, value, cycle_time, stale_after)
-                else:
-                    data[key] = (
-                        {
-                            **previous_item,
-                            "stale": bool(
-                                previous_item.get("updated_epoch")
-                                and (cycle_time - previous_item.get("updated_epoch")) >= stale_after
-                            ),
-                        }
-                        if previous_item
-                        else build_live_item(None, label, "N/A", cycle_time)
-                    )
+                value = safe_query(command)
+                data[key] = {
+                    **build_live_item(previous_data.get(key), label, value, cycle_time),
+                }
 
             protocol = get_protocol_name()
             now = time.time()
@@ -2556,16 +2115,16 @@ def update_loop():
                 last_readiness_refresh = now
 
             with state_lock:
-                current_rpm = dict(vehicle_data.get("rpm", previous_data.get("rpm", {
-                    "label": "RPM",
-                    "value": "N/A"
-                })))
-                current_speed = dict(vehicle_data.get("speed", previous_data.get("speed", {
-                    "label": "Speed",
-                    "value": "N/A"
-                })))
-                data["rpm"] = current_rpm
-                data["speed"] = current_speed
+                for fast_key, fallback_label in {
+                    "rpm": "RPM",
+                    "speed": "Speed",
+                    "engine_load": "Engine load",
+                    "throttle": "Throttle position",
+                }.items():
+                    data[fast_key] = dict(vehicle_data.get(fast_key, previous_data.get(fast_key, {
+                        "label": fallback_label,
+                        "value": "N/A"
+                    })))
                 vehicle_data = data
                 obd_status["connected"] = True
                 obd_status["protocol"] = protocol
@@ -2573,7 +2132,7 @@ def update_loop():
                 obd_status["user_message"] = "Live data is updating."
                 obd_status["connecting"] = False
                 obd_status["demo_mode"] = False
-                obd_status["limited_mode"] = get_limited_mode_enabled()
+                obd_status["limited_mode"] = bool(get_poll_profile()["limited"])
                 obd_status["last_update"] = time.strftime("%H:%M:%S")
                 obd_status["last_successful_update"] = obd_status["last_update"]
                 obd_status["connection_hint"] = detect_connection_hint(connection, None)
@@ -2606,9 +2165,13 @@ def rpm_update_loop():
                 continue
 
             rpm_value = safe_query(RPM_COMMAND)
-            speed_value = safe_query(SPEED_COMMAND)
             set_vehicle_value("rpm", "RPM", rpm_value)
+            speed_value = safe_query(SPEED_COMMAND)
             set_vehicle_value("speed", "Speed", speed_value)
+            engine_load_value = safe_query(ENGINE_LOAD_COMMAND)
+            set_vehicle_value("engine_load", "Engine load", engine_load_value)
+            throttle_value = safe_query(THROTTLE_COMMAND)
+            set_vehicle_value("throttle", "Throttle position", throttle_value)
 
             with state_lock:
                 vin = vehicle_profile.get("vin", "")
@@ -2623,7 +2186,7 @@ def rpm_update_loop():
                 vin_autoload_attempted = True
                 threading.Thread(target=auto_refresh_vin_if_needed, daemon=True).start()
 
-            time.sleep(min(RPM_POLL_INTERVAL, current_live_poll_interval))
+            time.sleep(RPM_POLL_INTERVAL)
         except Exception as e:
             log_error("RPM update loop", e)
             time.sleep(0.25)
@@ -2642,6 +2205,7 @@ def dashboard():
 def api_status():
     with state_lock:
         status = dict(obd_status)
+    status["limited_mode"] = bool(get_poll_profile()["limited"])
     connection_quality = (
         {
             "phase": "Demo mode",
@@ -2653,20 +2217,10 @@ def api_status():
         if status.get("demo_mode")
         else build_connection_quality_snapshot(connection, status.get("connecting"), status.get("error"))
     )
-    if not status.get("demo_mode"):
-        selected_port = str(status.get("current_port") or "").strip().upper()
-        detected_ports = list_serial_ports()
-        selected_port_present = any(
-            str(item.get("device") or "").strip().upper() == selected_port
-            for item in detected_ports
-        )
-        if selected_port and selected_port_present:
-            connection_quality["adapter_connected"] = True
-            connection_quality["selected_port_present"] = True
-            if not connection_quality.get("phase") or str(connection_quality.get("phase")).lower() == "not connected":
-                connection_quality["phase"] = "USB Adapter Detected"
+    connection_quality = enrich_connection_quality(status, connection_quality)
     return jsonify({
         **status,
+        "poll_profile": get_poll_profile(),
         "connection_quality": connection_quality,
         "session_state": build_scanner_session_state(
             status,
@@ -2693,13 +2247,7 @@ def api_connection_test():
     with state_lock:
         current_status = dict(obd_status)
 
-    current_connection_live = False
-    try:
-        current_connection_live = bool(connection and connection.is_connected())
-    except Exception:
-        current_connection_live = False
-
-    if current_connection_live or current_status.get("connected"):
+    if connection and current_status.get("connected"):
         protocol = current_status.get("protocol") or "Unknown"
         port = current_status.get("current_port") or "auto-detect"
         return jsonify({
@@ -2713,32 +2261,7 @@ def api_connection_test():
             ]
         })
 
-    if connection is not None:
-        quality = build_connection_quality_snapshot(
-            connection,
-            current_status.get("connecting"),
-            current_status.get("error"),
-        )
-        phase = quality.get("phase") or "Unknown"
-        protocol = current_status.get("protocol") or "Unknown"
-        return jsonify({
-            "success": bool(quality.get("car_connected")),
-            "phase": phase,
-            "protocol": protocol,
-            "steps": [
-                {"name": "USB adapter detected", "ok": bool(quality.get("adapter_connected")), "detail": current_status.get("current_port") or phase},
-                {"name": "OBD protocol detected", "ok": bool(quality.get("port_powered")), "detail": protocol if quality.get("port_powered") else phase},
-                {"name": "ECU responding", "ok": bool(quality.get("car_connected")), "detail": "Live ECU response" if quality.get("car_connected") else "No ECU response"},
-            ]
-        }), (200 if quality.get("adapter_connected") else 400)
-
-    result = run_connection_test(
-        obd,
-        get_configured_port(),
-        timeout=OBD_CONNECT_TIMEOUT,
-        attempts=OBD_CONNECT_ATTEMPTS,
-        retry_delay=OBD_CONNECT_RETRY_DELAY,
-    )
+    result = run_connection_test(obd, get_configured_port())
     return jsonify(result), (200 if result.get("success") else 400)
 
 
@@ -2750,43 +2273,18 @@ def api_data():
     return jsonify(payload)
 
 
-@app.route("/api/gauges")
-def api_gauges():
-    with state_lock:
-        return jsonify({
-            "connected": bool(obd_status.get("connected")),
-            "demo_mode": bool(obd_status.get("demo_mode")),
-            "rpm": dict(vehicle_data.get("rpm", {
-                "label": "RPM",
-                "value": "N/A",
-                "updated_at": "--",
-            })),
-            "speed": dict(vehicle_data.get("speed", {
-                "label": "Speed",
-                "value": "N/A",
-                "updated_at": "--",
-            })),
-        })
-
-
 @app.route("/api/report")
 def api_report():
     payload = current_scan_payload()
     return jsonify(payload.get("report", {}))
 
 
-@app.route("/api/report/export", methods=["GET", "POST"])
+@app.route("/api/report/export")
 def api_report_export():
-    if request.method == "POST":
-        payload = request.get_json(silent=True) or current_scan_payload()
-        payload.setdefault("created_at", time.strftime("%Y-%m-%d %H:%M:%S"))
-        payload["export_mode"] = "Paused stream snapshot"
-    else:
-        payload = current_scan_payload()
-        payload["export_mode"] = "Live snapshot"
+    payload = current_scan_payload()
     filename = f"obd-scan-report-{time.strftime('%Y%m%d-%H%M%S')}.html"
     return Response(
-        render_export_html(payload, current_language()),
+        render_export_html(payload),
         mimetype="text/html",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
@@ -2889,44 +2387,44 @@ def api_config():
         "obd_port": get_configured_port() or "",
         "detected_ports": list_serial_ports(),
         "demo_mode": get_demo_mode_enabled(),
-        "limited_mode": get_limited_mode_enabled(),
+        "limited_mode": bool(get_poll_profile()["limited"]),
+        "poll_profile": get_poll_profile(),
+        "poll_profiles": [{"id": key, **value} for key, value in POLL_PROFILES.items()],
         "demo_preset": get_demo_preset_name(),
         "demo_presets": get_demo_presets(),
         "poll_interval": POLL_INTERVAL,
     })
 
 
-@app.route("/api/limited-mode", methods=["POST"])
-def api_limited_mode():
+@app.route("/api/poll-profile", methods=["POST"])
+def api_poll_profile():
     try:
         payload = request.get_json(silent=True) or {}
-        enabled = bool(payload.get("enabled", False))
+        profile = normalize_poll_profile(payload.get("profile", "balanced"))
 
-        if not set_limited_mode_enabled(enabled):
+        if not set_poll_profile_name(profile):
             return jsonify({
                 "success": False,
-                "message": "Limited Mode could not be saved."
+                "message": "Polling profile could not be saved."
             }), 500
 
+        profile_meta = get_poll_profile()
         with state_lock:
-            obd_status["limited_mode"] = enabled
+            obd_status["limited_mode"] = bool(profile_meta["limited"])
             obd_status["last_update"] = time.strftime("%H:%M:%S")
-            obd_status["user_message"] = (
-                "Limited Mode enabled. Only core live ECU values are being polled."
-                if enabled
-                else "Limited Mode disabled. Full live ECU polling is active again."
-            )
+            obd_status["user_message"] = f"{profile_meta['label']} polling profile active."
 
         return jsonify({
             "success": True,
-            "limited_mode": enabled,
+            "poll_profile": profile_meta,
+            "limited_mode": bool(profile_meta["limited"]),
             "status": dict(obd_status),
         })
     except Exception as e:
-        log_error("Change Limited Mode", e)
+        log_error("Change polling profile", e)
         return jsonify({
             "success": False,
-            "message": "Limited Mode could not be changed."
+            "message": "Polling profile could not be changed."
         }), 500
 
 
@@ -3177,6 +2675,77 @@ def api_scans_save():
         }), 500
 
 
+@app.route("/api/garage-notes")
+def api_garage_notes():
+    try:
+        notes = get_recent_garage_notes()
+        notes = filter_garage_notes(
+            notes,
+            request.args.get("vin", ""),
+            request.args.get("plate", ""),
+        )
+        return jsonify(notes)
+    except Exception as e:
+        log_error("Read garage notes", e)
+        return jsonify([])
+
+
+@app.route("/api/garage-notes/export")
+def api_garage_notes_export():
+    try:
+        vin = request.args.get("vin", "")
+        plate = request.args.get("plate", "")
+        notes = filter_garage_notes(get_recent_garage_notes(), vin, plate)
+        filename = f"garage-notes-{time.strftime('%Y%m%d-%H%M%S')}.html"
+        return Response(
+            render_garage_notes_export_html(notes, vin, plate),
+            mimetype="text/html",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        log_error("Export garage notes", e)
+        return "Garage notes export could not be created.", 500
+
+
+@app.route("/api/garage-notes", methods=["POST"])
+def api_garage_notes_save():
+    payload = request.get_json(silent=True) or {}
+    with state_lock:
+        profile = dict(vehicle_profile)
+
+    vin = normalize_vin(payload.get("vin") or profile.get("vin") or "")
+    plate = normalize_garage_plate(payload.get("plate") or profile.get("plate_query") or "")
+    title = str(payload.get("title", "")).strip()
+    mileage = str(payload.get("mileage", "")).strip()
+    note = str(payload.get("note", "")).strip()
+
+    if not vin or not plate:
+        return jsonify({
+            "success": False,
+            "message": "Garage notes require both VIN and license plate. Enter them manually or load/detect them first."
+        }), 400
+
+    if not note:
+        return jsonify({
+            "success": False,
+            "message": "Note text is required."
+        }), 400
+
+    try:
+        saved = save_garage_note_snapshot(vin, plate, title, mileage, note)
+        return jsonify({
+            "success": True,
+            "note": saved,
+            "notes": get_recent_garage_notes(),
+        })
+    except Exception as e:
+        log_error("Save garage note", e)
+        return jsonify({
+            "success": False,
+            "message": "Garage note could not be saved."
+        }), 500
+
+
 @app.route("/api/reconnect", methods=["POST"])
 def reconnect_obd():
     global connection, vehicle_data, dtc_data
@@ -3239,4 +2808,4 @@ if __name__ == "__main__":
     connect_obd()
     threading.Thread(target=update_loop, daemon=True).start()
     threading.Thread(target=rpm_update_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)

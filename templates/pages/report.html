@@ -7,6 +7,12 @@
                     <h2 id="report-headline">{{ i18n.report.title }}</h2>
                 </div>
                 <div class="status-pill-row">
+                    <select id="report-export-preset" class="compact-select" aria-label="{{ i18n.report.export_preset }}">
+                        <option value="full">{{ i18n.report.export_full }}</option>
+                        <option value="codes">{{ i18n.report.export_codes }}</option>
+                        <option value="live">{{ i18n.report.export_live }}</option>
+                        <option value="vehicle">{{ i18n.report.export_vehicle }}</option>
+                    </select>
                     <button id="report-export-button" class="secondary-action inline-action" type="button">{{ i18n.report.export }}</button>
                     <button id="report-save-snapshot-button" class="secondary-action inline-action" type="button">{{ i18n.report.snapshot }}</button>
                     <button id="simple-mode-button" class="primary-toggle inline-action" type="button" aria-pressed="false">{{ i18n.report.simple_mode }}</button>

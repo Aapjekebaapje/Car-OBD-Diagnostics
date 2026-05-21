@@ -1,7 +1,5 @@
-const CONNECTED_POLL_MS = 200;
-const DISCONNECTED_POLL_MS = 1000;
-const FAST_GAUGE_POLL_MS = 40;
-const IDLE_GAUGE_POLL_MS = 250;
+const CONNECTED_POLL_MS = 100;
+const DISCONNECTED_POLL_MS = 1200;
 const TACH_MIN_DEG = 135;
 const TACH_MAX_DEG = 405;
 const TACH_MAX_RPM = 8000;
@@ -13,8 +11,6 @@ const PORT_POLL_MS = 1000;
 
 let safeMode = true;
 let pollTimer = null;
-let gaugePollTimer = null;
-let gaugeRequestInFlight = false;
 let portPollTimer = null;
 let isConnected = false;
 let currentRpm = 0;
@@ -55,22 +51,24 @@ let demoMode = false;
 let demoPreset = "idle";
 let demoPresetRequestPending = false;
 let limitedMode = false;
+let pollProfile = "balanced";
 let simpleMode = false;
 const rpmChartPoints = [];
 const speedChartPoints = [];
+const coolantChartPoints = [];
+const voltageChartPoints = [];
+const engineLoadChartPoints = [];
+const throttleChartPoints = [];
 const CHART_POINT_LIMIT = 60;
 const VEHICLE_LOOKUP_HISTORY_KEY = "obd_vehicle_lookup_history";
 const VEHICLE_LOOKUP_HISTORY_LIMIT = 10;
+const POLL_PROFILE_STORAGE_KEY = "obd_poll_profile";
 const demoPresetMeta = new Map();
 let lastChartSampleAt = 0;
-const GAUGE_STIFFNESS = 78;
-const GAUGE_DAMPING = 0.9;
-const RPM_MAX_VELOCITY = 30000;
-const SPEED_MAX_VELOCITY = 1200;
-const RPM_TARGET_DEADBAND = 12;
-const SPEED_TARGET_DEADBAND = 0.4;
-const RPM_SNAP_DELTA = 2600;
-const SPEED_SNAP_DELTA = 45;
+const GAUGE_STIFFNESS = 14;
+const GAUGE_DAMPING = 0.72;
+const RPM_MAX_VELOCITY = 7200;
+const SPEED_MAX_VELOCITY = 220;
 
 function byId(id) {
     return document.getElementById(id);
@@ -472,11 +470,13 @@ async function fetchStatusOnly(shouldHydrateFullData = false) {
     demoMode = Boolean(payload.demo_mode);
     safeMode = Boolean(payload.safe_mode);
     limitedMode = Boolean(payload.limited_mode);
+    pollProfile = String(payload.poll_profile?.id || pollProfile);
 
     updateStatus(payload, sessionState);
     updateConnectionQuality(payload.connection_quality || {});
     updateSafeModeUi();
     updateLimitedModeUi();
+    updatePollProfileUi(payload.poll_profile || { id: pollProfile });
     updateErrorLog(payload.recent_errors || []);
     updateDemoModeUi();
     updateDemoPresetUi();
@@ -557,11 +557,15 @@ async function fetchFullData() {
 
 async function loadConfig() {
     try {
+        pollProfile = loadLocalPollProfile();
+        updatePollProfileUi({ id: pollProfile });
         const response = await fetch("/api/config");
         if (!response.ok) throw new Error(`Server returned status ${response.status}`);
         const config = await response.json();
         demoMode = Boolean(config.demo_mode);
         limitedMode = Boolean(config.limited_mode);
+        pollProfile = String(config.poll_profile?.id || pollProfile || "balanced");
+        saveLocalPollProfile(pollProfile);
         demoPreset = String(config.demo_preset || "idle");
         storeDemoPresets(config.demo_presets || []);
         const portInput = byId("port-input");
@@ -571,6 +575,7 @@ async function loadConfig() {
         renderPortOptions(config.detected_ports || [], config.obd_port || "");
         updateDemoModeUi();
         updateLimitedModeUi();
+        updatePollProfileUi(config.poll_profile || { id: pollProfile });
         updateDemoPresetUi();
         setText("scope-badge", tr("scope_standard_obd", "Standard OBD Only"));
     } catch (error) {
@@ -759,43 +764,6 @@ function scheduleNextPoll() {
     pollTimer = window.setTimeout(fetchData, isConnected ? CONNECTED_POLL_MS : DISCONNECTED_POLL_MS);
 }
 
-function scheduleGaugePoll(delay = FAST_GAUGE_POLL_MS) {
-    window.clearTimeout(gaugePollTimer);
-    gaugePollTimer = window.setTimeout(fetchGaugeData, delay);
-}
-
-async function fetchGaugeData() {
-    if (gaugeRequestInFlight) {
-        scheduleGaugePoll(FAST_GAUGE_POLL_MS);
-        return;
-    }
-
-    gaugeRequestInFlight = true;
-    try {
-        const response = await fetch("/api/gauges", {
-            signal: AbortSignal.timeout(1000)
-        });
-        if (!response.ok) throw new Error(`Server returned status ${response.status}`);
-
-        const payload = await response.json();
-        const vehicle = {
-            rpm: payload.rpm || {},
-            speed: payload.speed || {},
-        };
-
-        if (!isFrozen && (payload.connected || payload.demo_mode)) {
-            updateGaugeTargets(vehicle);
-            updateCharts(vehicle);
-        }
-
-        scheduleGaugePoll((payload.connected || payload.demo_mode) ? FAST_GAUGE_POLL_MS : IDLE_GAUGE_POLL_MS);
-    } catch (error) {
-        scheduleGaugePoll(IDLE_GAUGE_POLL_MS);
-    } finally {
-        gaugeRequestInFlight = false;
-    }
-}
-
 function updateStatus(status, sessionState = {}) {
     const dot = byId("status-dot");
     const reconnectButton = byId("reconnect-button");
@@ -830,7 +798,7 @@ function updateStatus(status, sessionState = {}) {
     setText("adapter-state", adapterStateText);
     setText("system-status", systemStatusText);
     setText("protocol", `${tr("protocol_prefix", "Protocol")}: ${status.protocol || "Unknown"}`);
-    setText("status-message", status.user_message || (status.connected ? tr("live_streaming", "Streaming") : status.error || tr("status_no_connection", "No connection")));
+    setText("status-message", status.user_message || status.error || tr("status_no_connection", "No connection"));
     setText("last-update", `${tr("update_prefix", "Update")}: ${status.last_update || "--"}`);
     setText("last-successful-update", `${tr("last_live_prefix", "Last live data")}: ${status.last_successful_update || "--"}`);
     setText("current-port", portLabel);
@@ -874,6 +842,13 @@ function updateConnectionQuality(quality) {
         }
         element.innerHTML = `<span>${item.label}</span><strong>${item.online ? tr("quality_ok", "Online") : tr("quality_waiting", "Waiting")}</strong>`;
     });
+
+    const summary = quality.quality || {};
+    const summaryElement = byId("adapter-quality-summary");
+    if (summaryElement) {
+        summaryElement.className = `adapter-quality-summary status-${summary.level || "info"}`;
+        summaryElement.innerHTML = `<strong>${summary.label || tr("unknown", "Unknown")}</strong><p>${summary.detail || ""}</p>`;
+    }
 }
 
 function updateDemoModeUi() {
@@ -910,6 +885,45 @@ function updateLimitedModeUi() {
         topbarState.innerText = limitedMode
             ? tr("limited_mode_on_short", "On")
             : tr("limited_mode_off_short", "Off");
+    }
+}
+
+function updatePollProfileUi(profile = {}) {
+    const active = String(profile.id || pollProfile || loadLocalPollProfile() || "balanced");
+    pollProfile = active;
+    document.querySelectorAll("[data-poll-profile]").forEach((button) => {
+        const isActive = button.dataset.pollProfile === active;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+    });
+
+    const copy = byId("poll-profile-copy");
+    if (copy) {
+        copy.innerText = tr(
+            `poll_profile_${active}_copy`,
+            profile.description || tr("poll_profile_copy", "Balanced is recommended. Performance feels faster, Safe reduces ECU and adapter load.")
+        );
+    }
+    const topbarState = byId("profile-state");
+    if (topbarState) {
+        topbarState.innerText = active.charAt(0).toUpperCase() + active.slice(1);
+    }
+}
+
+function loadLocalPollProfile() {
+    try {
+        const stored = window.localStorage.getItem(POLL_PROFILE_STORAGE_KEY);
+        return ["performance", "balanced", "safe"].includes(stored) ? stored : "balanced";
+    } catch {
+        return "balanced";
+    }
+}
+
+function saveLocalPollProfile(profile) {
+    try {
+        window.localStorage.setItem(POLL_PROFILE_STORAGE_KEY, profile);
+    } catch {
+        // Local storage can be unavailable in strict browser modes.
     }
 }
 
@@ -979,32 +993,20 @@ function updateGaugeTargets(vehicle) {
     const nextRpm = numberFromValue(vehicle.rpm?.value);
     const nextSpeed = numberFromValue(vehicle.speed?.value);
 
-    if (nextRpm !== null && nextRpm !== undefined && Math.abs(nextRpm - targetRpm) >= RPM_TARGET_DEADBAND) {
-        targetRpm = nextRpm;
-    }
-    if (nextSpeed !== null && nextSpeed !== undefined && Math.abs(nextSpeed - targetSpeed) >= SPEED_TARGET_DEADBAND) {
-        targetSpeed = nextSpeed;
-    }
+    targetRpm = nextRpm;
+    targetSpeed = nextSpeed;
 }
 
-function smoothGaugeValue(current, target, velocity, dt, maxVelocity, snapDelta) {
+function smoothGaugeValue(current, target, velocity, dt, maxVelocity) {
     const difference = target - current;
-    if (Math.abs(difference) >= snapDelta) {
-        return {
-            current: target,
-            velocity: 0,
-        };
-    }
-
-    const acceleration = difference * GAUGE_STIFFNESS;
     const nextVelocity = clamp(
-        (velocity + acceleration * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
+        (velocity + difference * GAUGE_STIFFNESS * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
         -maxVelocity,
         maxVelocity
     );
     const nextCurrent = current + nextVelocity * dt;
 
-    if (Math.abs(target - nextCurrent) < 0.08 && Math.abs(nextVelocity) < 0.15) {
+    if (Math.abs(target - nextCurrent) < 0.15 && Math.abs(nextVelocity) < 0.2) {
         return {
             current: target,
             velocity: 0,
@@ -1053,14 +1055,13 @@ function drawLineChart(canvasId, values, color, maxValueHint = 100) {
         ctx.stroke();
     }
 
-    if (!values.length) {
-        return;
-    }
+    const cleanValues = (values && values.length ? values : [0, 0]).map((value) => (
+        Number.isFinite(Number(value)) ? Number(value) : 0
+    ));
+    const maxValue = Math.max(maxValueHint, ...cleanValues, 1);
+    const stepX = cleanValues.length > 1 ? width / (cleanValues.length - 1) : width;
 
-    const maxValue = Math.max(maxValueHint, ...values, 1);
-    const stepX = values.length > 1 ? width / (values.length - 1) : width;
-
-    const points = values.map((value, index) => ({
+    const points = cleanValues.map((value, index) => ({
         x: stepX * index,
         y: height - (Math.max(value, 0) / maxValue) * (height - 12) - 6
     }));
@@ -1073,7 +1074,7 @@ function drawLineChart(canvasId, values, color, maxValueHint = 100) {
     ctx.moveTo(points[0].x, points[0].y);
 
     if (points.length === 1) {
-        ctx.lineTo(points[0].x, points[0].y);
+        ctx.lineTo(width, points[0].y);
     } else {
         for (let index = 0; index < points.length - 1; index += 1) {
             const current = points[index];
@@ -1097,17 +1098,38 @@ function updateCharts(vehicle) {
     if (!speedChartPoints.length) {
         pushChartPoint(speedChartPoints, numberFromValue(vehicle.speed?.value));
     }
+    if (!coolantChartPoints.length) {
+        pushChartPoint(coolantChartPoints, numberFromValue(vehicle.coolant_temp?.value));
+    }
+    if (!voltageChartPoints.length) {
+        pushChartPoint(voltageChartPoints, numberFromValue(vehicle.control_voltage?.value || vehicle.voltage?.value));
+    }
+    if (!engineLoadChartPoints.length) {
+        pushChartPoint(engineLoadChartPoints, numberFromValue(vehicle.engine_load?.value));
+    }
+    if (!throttleChartPoints.length) {
+        pushChartPoint(throttleChartPoints, numberFromValue(vehicle.throttle?.value));
+    }
 }
 
 function renderCharts(now) {
     if (!lastChartSampleAt || now - lastChartSampleAt >= CHART_SAMPLE_MS) {
         pushChartPoint(rpmChartPoints, currentRpm);
         pushChartPoint(speedChartPoints, currentSpeed);
+        const vehicle = currentDisplayPayload(lastLivePayload || {})?.vehicle || {};
+        pushChartPoint(coolantChartPoints, numberFromValue(vehicle.coolant_temp?.value));
+        pushChartPoint(voltageChartPoints, numberFromValue(vehicle.control_voltage?.value || vehicle.voltage?.value));
+        pushChartPoint(engineLoadChartPoints, numberFromValue(vehicle.engine_load?.value));
+        pushChartPoint(throttleChartPoints, numberFromValue(vehicle.throttle?.value));
         lastChartSampleAt = now;
     }
 
     drawLineChart("rpm-chart", rpmChartPoints, "#e14d4d", 5000);
     drawLineChart("speed-chart", speedChartPoints, "#0d6efd", 160);
+    drawLineChart("coolant-chart", coolantChartPoints, "#0ca678", 130);
+    drawLineChart("voltage-chart", voltageChartPoints, "#f59f00", 16);
+    drawLineChart("engine-load-chart", engineLoadChartPoints, "#845ef7", 100);
+    drawLineChart("throttle-chart", throttleChartPoints, "#12b886", 100);
 }
 
 function updateHealth(health) {
@@ -1438,34 +1460,8 @@ function toggleSimpleMode() {
     updateSimpleSummary(lastLivePayload?.simple_summary || {});
 }
 
-async function exportScanReport() {
-    if (!isFrozen || !frozenPayload) {
-        window.location.href = "/api/report/export";
-        return;
-    }
-
-    try {
-        const response = await fetch("/api/report/export", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(frozenPayload)
-        });
-        if (!response.ok) throw new Error(`Server returned status ${response.status}`);
-
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-        link.href = url;
-        link.download = `obd-scan-report-${timestamp}.html`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
-    } catch (error) {
-        console.error(error);
-        setText("report-action-result", tr("save_scan_failed", "Scan could not be saved."));
-    }
+function exportScanReport() {
+    window.location.href = "/api/report/export";
 }
 
 function formatEngine(decoded) {
@@ -1579,6 +1575,15 @@ function updateVehicleProfileView(profile) {
     if (plateInput && lastVehicleProfile.plate_query) {
         plateInput.value = lastVehicleProfile.plate_query;
     }
+    const garageVinInput = byId("garage-note-vin");
+    if (garageVinInput && vin && document.activeElement !== garageVinInput) {
+        garageVinInput.value = vin;
+    }
+    const garagePlateInput = byId("garage-note-plate");
+    if (garagePlateInput && lastVehicleProfile.plate_query && document.activeElement !== garagePlateInput) {
+        garagePlateInput.value = lastVehicleProfile.plate_query;
+    }
+    updateGarageActiveVehicle();
 
     setText("plate-result", lastVehicleProfile.plate_message || tr("plate_default", "Enter a Dutch license plate manually to load RDW data."));
     setText("rdw-plate", displayValue(rdw.plate));
@@ -1627,11 +1632,11 @@ function renderGauges(now = performance.now()) {
     const dt = clamp(lastGaugeFrameAt ? (now - lastGaugeFrameAt) / 1000 : 1 / 60, 1 / 240, 0.05);
     lastGaugeFrameAt = now;
 
-    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY, RPM_SNAP_DELTA);
+    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY);
     currentRpm = rpmState.current;
     rpmVelocity = rpmState.velocity;
 
-    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY, SPEED_SNAP_DELTA);
+    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY);
     currentSpeed = speedState.current;
     speedVelocity = speedState.velocity;
 
@@ -1863,11 +1868,6 @@ function toggleFreeze() {
         };
         if (lastLivePayload) {
             frozenPayload = lastLivePayload;
-            frozenPayload.vehicle = {
-                ...(frozenPayload.vehicle || {}),
-                rpm: { ...(frozenPayload.vehicle?.rpm || {}), value: `${rpmText} RPM` },
-                speed: { ...(frozenPayload.vehicle?.speed || {}), value: `${speedText} km/h` }
-            };
         }
         isFrozen = true;
     }
@@ -2213,6 +2213,34 @@ async function toggleLimitedMode() {
     }
 }
 
+async function setPollProfile(profile) {
+    pollProfile = String(profile || "balanced");
+    saveLocalPollProfile(pollProfile);
+    updatePollProfileUi({ id: pollProfile });
+
+    try {
+        const response = await fetch("/api/poll-profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile: pollProfile })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.message || `Server returned status ${response.status}`);
+        }
+
+        pollProfile = String(result.poll_profile?.id || pollProfile);
+        limitedMode = Boolean(result.limited_mode);
+        updateLimitedModeUi();
+        updatePollProfileUi(result.poll_profile || { id: pollProfile });
+        fetchSupportedSensors();
+        fetchData();
+    } catch (error) {
+        console.error(error);
+        updatePollProfileUi({ id: pollProfile });
+    }
+}
+
 async function setDemoPreset(preset) {
     if (demoPresetRequestPending) return;
 
@@ -2554,6 +2582,135 @@ async function saveScanSnapshotToResult(resultElement, label) {
     }
 }
 
+function garageFilterParams() {
+    const params = new URLSearchParams();
+    const vin = (byId("garage-filter-vin")?.value || "").trim().toUpperCase();
+    const plate = (byId("garage-filter-plate")?.value || "").trim().toUpperCase();
+    if (vin) params.set("vin", vin);
+    if (plate) params.set("plate", plate);
+    return params;
+}
+
+function updateGarageActiveVehicle() {
+    const target = byId("garage-active-vehicle");
+    if (!target) return;
+    const vin = lastVehicleProfile.vin || byId("garage-note-vin")?.value || "--";
+    const plate = lastVehicleProfile.plate_query || byId("garage-note-plate")?.value || "--";
+    const strong = target.querySelector("strong");
+    if (strong) {
+        strong.textContent = `VIN: ${vin || "--"} | ${tr("history_type_plate", "Plate")}: ${plate || "--"}`;
+    }
+}
+
+async function fetchGarageNotes() {
+    const list = byId("garage-notes-list");
+    if (!list) return;
+    list.innerHTML = `<p>${tr("garage_loading", "Loading garage notes...")}</p>`;
+
+    try {
+        const params = garageFilterParams();
+        const response = await fetch(`/api/garage-notes${params.toString() ? `?${params.toString()}` : ""}`);
+        const notes = await response.json();
+        renderGarageNotes(notes || []);
+    } catch (error) {
+        console.error(error);
+        list.innerHTML = `<p>${tr("garage_failed", "Could not load garage notes.")}</p>`;
+    }
+}
+
+function renderGarageNotes(notes) {
+    const list = byId("garage-notes-list");
+    if (!list) return;
+    list.replaceChildren();
+
+    if (!notes.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = tr("garage_filter_empty", "No garage notes match this VIN or plate.");
+        list.appendChild(empty);
+        return;
+    }
+
+    notes.forEach((note, index) => {
+        const row = document.createElement("div");
+        row.className = "history-row garage-note-row";
+        row.style.animationDelay = `${Math.min(index * 24, 260)}ms`;
+        const identity = [note.vin, note.plate].filter(Boolean).join(" | ") || "--";
+        row.innerHTML = `
+            <div>
+                <strong>${note.title || tr("garage_note", "Garage note")}</strong>
+                <p>${note.created_at || "--"} | ${identity} | ${note.mileage || "--"}</p>
+                <span>${note.note || ""}</span>
+            </div>
+            <div class="history-health">
+                <strong>${displayValue(note.payload?.health?.score, "--")}</strong>
+                <p>${tr("history_health_score", "Health score")}</p>
+            </div>
+        `;
+        list.appendChild(row);
+    });
+}
+
+function clearGarageFilter() {
+    const vin = byId("garage-filter-vin");
+    const plate = byId("garage-filter-plate");
+    if (vin) vin.value = "";
+    if (plate) plate.value = "";
+    fetchGarageNotes();
+}
+
+function exportGarageNotes() {
+    const params = garageFilterParams();
+    window.location.href = `/api/garage-notes/export${params.toString() ? `?${params.toString()}` : ""}`;
+}
+
+async function saveGarageNote(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const resultElement = byId("garage-note-result");
+    const vin = (byId("garage-note-vin")?.value || "").trim().toUpperCase();
+    const plate = (byId("garage-note-plate")?.value || "").trim().toUpperCase();
+    const noteText = byId("garage-note-text")?.value || "";
+
+    if (!vin || !plate) {
+        setText("garage-note-result", tr("garage_identity_required", "Enter both VIN and license plate before saving a garage note."));
+        return;
+    }
+
+    if (!noteText.trim()) {
+        setText("garage-note-result", tr("garage_note_required", "Write a note before saving."));
+        return;
+    }
+
+    setText("garage-note-result", tr("garage_saving", "Saving garage note..."));
+
+    try {
+        const response = await fetch("/api/garage-notes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                vin,
+                plate,
+                title: byId("garage-note-title")?.value || "",
+                mileage: byId("garage-note-mileage")?.value || "",
+                note: noteText
+            })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.message || `Server returned status ${response.status}`);
+        if (resultElement) {
+            resultElement.innerText = tr("garage_saved", "Garage note saved at {time}.", { time: result.note?.created_at || "--" });
+        }
+        form.reset();
+        renderGarageNotes(result.notes || []);
+        updateVehicleProfileView(lastVehicleProfile);
+        fetchGarageNotes();
+    } catch (error) {
+        console.error(error);
+        setText("garage-note-result", error.message || tr("garage_save_failed", "Garage note could not be saved."));
+    }
+}
+
 function setLanguageCookie(languageCode) {
     document.cookie = `obd_lang=${encodeURIComponent(languageCode)}; path=/; max-age=31536000; SameSite=Lax`;
 }
@@ -2571,20 +2728,56 @@ function initLanguageSwitcher() {
     });
 }
 
-document.getElementById("safe-mode-button").addEventListener("click", toggleSafeMode);
-document.getElementById("freeze-button").addEventListener("click", toggleFreeze);
-document.getElementById("clear-button").addEventListener("click", clearDTC);
-document.getElementById("clear-button-codes").addEventListener("click", clearDTC);
-document.getElementById("port-form").addEventListener("submit", savePort);
-document.getElementById("port-input").addEventListener("change", savePort);
-document.getElementById("reconnect-button").addEventListener("click", reconnectObd);
-document.getElementById("refresh-vin-button").addEventListener("click", () => fetchVehicleProfile(true));
-document.getElementById("manual-vin-form").addEventListener("submit", saveManualVin);
-document.getElementById("clear-vin-button").addEventListener("click", clearManualVinInput);
-document.getElementById("plate-form").addEventListener("submit", savePlateLookup);
-document.getElementById("scan-codes-button").addEventListener("click", scanCodes);
-document.getElementById("refresh-supported-button").addEventListener("click", fetchSupportedSensors);
-document.getElementById("save-scan-button").addEventListener("click", saveScanToDatabase);
+function resetUiCache() {
+    try {
+        window.localStorage.removeItem(POLL_PROFILE_STORAGE_KEY);
+        window.localStorage.removeItem(VEHICLE_LOOKUP_HISTORY_KEY);
+    } catch {
+        // Ignore strict browser storage failures.
+    }
+    document.cookie = "obd_lang=; path=/; max-age=0; SameSite=Lax";
+    setText("save-scan-result", tr("ui_cache_reset", "UI cache cleared. The page will reload."));
+    window.setTimeout(() => window.location.reload(), 350);
+}
+
+function initPollProfileButtons() {
+    pollProfile = loadLocalPollProfile();
+    updatePollProfileUi({ id: pollProfile });
+    document.querySelectorAll("[data-poll-profile]").forEach((button) => {
+        button.disabled = false;
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            setPollProfile(button.dataset.pollProfile || "balanced");
+        });
+    });
+}
+
+function on(id, eventName, handler) {
+    const element = byId(id);
+    if (element) {
+        element.addEventListener(eventName, handler);
+    }
+}
+
+initPollProfileButtons();
+on("safe-mode-button", "click", toggleSafeMode);
+on("freeze-button", "click", toggleFreeze);
+on("clear-button", "click", clearDTC);
+on("clear-button-codes", "click", clearDTC);
+on("port-form", "submit", savePort);
+on("port-input", "change", savePort);
+on("reconnect-button", "click", reconnectObd);
+on("refresh-vin-button", "click", () => fetchVehicleProfile(true));
+on("manual-vin-form", "submit", saveManualVin);
+on("clear-vin-button", "click", clearManualVinInput);
+on("plate-form", "submit", savePlateLookup);
+on("scan-codes-button", "click", scanCodes);
+on("refresh-supported-button", "click", fetchSupportedSensors);
+on("save-scan-button", "click", saveScanToDatabase);
+on("reset-ui-cache-button", "click", resetUiCache);
+on("garage-filter-button", "click", fetchGarageNotes);
+on("garage-clear-filter-button", "click", clearGarageFilter);
+on("garage-export-button", "click", exportGarageNotes);
 const reportExportButton = byId("report-export-button");
 if (reportExportButton) {
     reportExportButton.addEventListener("click", exportScanReport);
@@ -2614,6 +2807,21 @@ const testConnectionButton = byId("test-connection-button");
 if (testConnectionButton) {
     testConnectionButton.addEventListener("click", testConnection);
 }
+const garageNoteForm = byId("garage-note-form");
+if (garageNoteForm) {
+    garageNoteForm.addEventListener("submit", saveGarageNote);
+}
+["garage-filter-vin", "garage-filter-plate"].forEach((id) => {
+    const input = byId(id);
+    if (input) {
+        input.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                fetchGarageNotes();
+            }
+        });
+    }
+});
 
 initLanguageSwitcher();
 initPortDropdown();
@@ -2622,12 +2830,12 @@ initDashboardLauncher();
 initPageFromHash();
 updateFreezeUi();
 requestAnimationFrame(renderGauges);
-scheduleGaugePoll();
 armStartupFallback();
 loadConfig();
 schedulePortPoll();
 fetchSupportedSensors();
 fetchScanHistory();
+fetchGarageNotes();
 renderVehicleLookupHistory();
 fetchData();
 window.addEventListener("load", () => {

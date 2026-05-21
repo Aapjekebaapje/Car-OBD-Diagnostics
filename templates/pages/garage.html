@@ -1,0 +1,48 @@
+<section class="page-screen page-garage" data-page="garage">
+    <div class="garage-layout">
+        <article class="panel garage-note-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.garage.eyebrow }}</p>
+                    <h2>{{ i18n.garage.title }}</h2>
+                </div>
+            </div>
+            <p class="panel-copy">{{ i18n.garage["copy"] }}</p>
+            <div id="garage-active-vehicle" class="garage-active-vehicle">
+                <span>{{ i18n.garage.active_vehicle }}</span>
+                <strong>--</strong>
+            </div>
+            <form id="garage-note-form" class="garage-note-form">
+                <label for="garage-note-vin">{{ i18n.garage.vin_label }}</label>
+                <input id="garage-note-vin" name="vin" type="text" maxlength="17" placeholder="{{ i18n.garage.vin_placeholder }}" autocomplete="off" spellcheck="false">
+                <label for="garage-note-plate">{{ i18n.garage.plate_label }}</label>
+                <input id="garage-note-plate" name="plate" type="text" maxlength="12" placeholder="{{ i18n.garage.plate_placeholder }}" autocomplete="off" spellcheck="false">
+                <label for="garage-note-title">{{ i18n.garage.title_label }}</label>
+                <input id="garage-note-title" name="title" type="text" maxlength="80" placeholder="{{ i18n.garage.title_placeholder }}">
+                <label for="garage-note-mileage">{{ i18n.garage.mileage_label }}</label>
+                <input id="garage-note-mileage" name="mileage" type="text" maxlength="40" placeholder="{{ i18n.garage.mileage_placeholder }}">
+                <label for="garage-note-text">{{ i18n.garage.note_label }}</label>
+                <textarea id="garage-note-text" name="note" rows="7" required placeholder="{{ i18n.garage.note_placeholder }}"></textarea>
+                <button class="secondary-action" type="submit">{{ i18n.garage.save }}</button>
+            </form>
+            <p id="garage-note-result" class="panel-note">{{ i18n.garage.result }}</p>
+        </article>
+
+        <article class="panel garage-history-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.garage.history_eyebrow }}</p>
+                    <h2>{{ i18n.garage.history_title }}</h2>
+                </div>
+            </div>
+            <div class="garage-filter-bar">
+                <input id="garage-filter-vin" type="text" maxlength="17" placeholder="{{ i18n.garage.filter_vin }}">
+                <input id="garage-filter-plate" type="text" maxlength="12" placeholder="{{ i18n.garage.filter_plate }}">
+                <button id="garage-filter-button" class="secondary-action" type="button">{{ i18n.garage.filter }}</button>
+                <button id="garage-clear-filter-button" class="secondary-action" type="button">{{ i18n.garage.clear_filter }}</button>
+                <button id="garage-export-button" class="secondary-action" type="button">{{ i18n.garage.export_html }}</button>
+            </div>
+            <div id="garage-notes-list" class="history-list"></div>
+        </article>
+    </div>
+</section>

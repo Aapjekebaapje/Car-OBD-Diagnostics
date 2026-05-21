@@ -1,7 +1,5 @@
-const CONNECTED_POLL_MS = 200;
-const DISCONNECTED_POLL_MS = 1000;
-const FAST_GAUGE_POLL_MS = 40;
-const IDLE_GAUGE_POLL_MS = 250;
+const CONNECTED_POLL_MS = 100;
+const DISCONNECTED_POLL_MS = 1200;
 const TACH_MIN_DEG = 135;
 const TACH_MAX_DEG = 405;
 const TACH_MAX_RPM = 8000;
@@ -13,8 +11,6 @@ const PORT_POLL_MS = 1000;
 
 let safeMode = true;
 let pollTimer = null;
-let gaugePollTimer = null;
-let gaugeRequestInFlight = false;
 let portPollTimer = null;
 let isConnected = false;
 let currentRpm = 0;
@@ -55,22 +51,24 @@ let demoMode = false;
 let demoPreset = "idle";
 let demoPresetRequestPending = false;
 let limitedMode = false;
+let pollProfile = "balanced";
 let simpleMode = false;
 const rpmChartPoints = [];
 const speedChartPoints = [];
+const coolantChartPoints = [];
+const voltageChartPoints = [];
+const engineLoadChartPoints = [];
+const throttleChartPoints = [];
 const CHART_POINT_LIMIT = 60;
 const VEHICLE_LOOKUP_HISTORY_KEY = "obd_vehicle_lookup_history";
 const VEHICLE_LOOKUP_HISTORY_LIMIT = 10;
+const POLL_PROFILE_STORAGE_KEY = "obd_poll_profile";
 const demoPresetMeta = new Map();
 let lastChartSampleAt = 0;
-const GAUGE_STIFFNESS = 78;
-const GAUGE_DAMPING = 0.9;
-const RPM_MAX_VELOCITY = 30000;
-const SPEED_MAX_VELOCITY = 1200;
-const RPM_TARGET_DEADBAND = 12;
-const SPEED_TARGET_DEADBAND = 0.4;
-const RPM_SNAP_DELTA = 2600;
-const SPEED_SNAP_DELTA = 45;
+const GAUGE_STIFFNESS = 14;
+const GAUGE_DAMPING = 0.72;
+const RPM_MAX_VELOCITY = 7200;
+const SPEED_MAX_VELOCITY = 220;
 
 function byId(id) {
     return document.getElementById(id);
@@ -131,11 +129,11 @@ function isUnavailableValue(value) {
     return normalized === "" || normalized === "--" || normalized === "n/a" || normalized === "null" || normalized === "none";
 }
 
-function displayLiveValue(value, fallback = tr("quick_no_data", "Geen data")) {
+function displayLiveValue(value, fallback = tr("quick_no_data", "No Data")) {
     return isUnavailableValue(value) ? fallback : String(value);
 }
 
-function formatLiveValue(value, sensorKey, fallback = tr("quick_no_data", "Geen data")) {
+function formatLiveValue(value, sensorKey, fallback = tr("quick_no_data", "No Data")) {
     if (isUnavailableValue(value)) {
         return fallback;
     }
@@ -156,10 +154,10 @@ function formatLiveValue(value, sensorKey, fallback = tr("quick_no_data", "Geen 
 
     if (sensorKey === "status") {
         if (/^<obd\.OBDResponse\.Status object/.test(raw)) {
-            return tr("status_report", "Statusrapport");
+            return tr("status_report", "Status report");
         }
         if (/^<.*object.*>$/.test(raw)) {
-            return tr("status_object", "Statusobject");
+            return tr("status_object", "Status object");
         }
     }
 
@@ -416,7 +414,7 @@ function storeDemoPresets(presets) {
     });
 }
 
-function dismissStartup(statusMessage = tr("scanner_ready", "Scanner klaar.")) {
+function dismissStartup(statusMessage = tr("scanner_ready", "Scanner ready.")) {
     if (startupDismissed) return;
     const overlay = byId("startup-overlay");
     setText("startup-message", statusMessage);
@@ -431,7 +429,7 @@ function dismissStartup(statusMessage = tr("scanner_ready", "Scanner klaar.")) {
 function armStartupFallback() {
     window.clearTimeout(startupFallbackTimer);
     startupFallbackTimer = window.setTimeout(() => {
-        dismissStartup(tr("dashboard_loaded", "Dashboard geladen."));
+        dismissStartup(tr("dashboard_loaded", "Dashboard loaded."));
     }, STARTUP_MAX_WAIT_MS);
 }
 
@@ -444,8 +442,8 @@ async function fetchData() {
         updateStatus({
             connected: false,
             current_port: "",
-            error: tr("frontend_adapter_error", "Kan geen verbinding maken met de ECU. Controleer of de USB OBD-adapter is aangesloten."),
-            user_message: tr("frontend_adapter_message", "Kan geen verbinding maken met de ECU. De USB OBD-adapter is mogelijk niet verbonden.")
+            error: tr("frontend_adapter_error", "Cannot connect to the ECU. Check whether the USB OBD adapter is plugged in."),
+            user_message: tr("frontend_adapter_message", "Cannot connect to the ECU. The USB OBD adapter may not be connected.")
         });
         updateErrorLog([{
             time: "--",
@@ -453,7 +451,7 @@ async function fetchData() {
             message: error.message,
             technical_message: error.message
         }]);
-        dismissStartup(tr("frontend_adapter_short", "Kan geen verbinding maken met de ECU. Controleer de USB OBD-adapter."));
+        dismissStartup(tr("frontend_adapter_short", "Cannot connect to the ECU. Check the USB OBD adapter."));
     } finally {
         scheduleNextPoll();
     }
@@ -472,15 +470,17 @@ async function fetchStatusOnly(shouldHydrateFullData = false) {
     demoMode = Boolean(payload.demo_mode);
     safeMode = Boolean(payload.safe_mode);
     limitedMode = Boolean(payload.limited_mode);
+    pollProfile = String(payload.poll_profile?.id || pollProfile);
 
     updateStatus(payload, sessionState);
     updateConnectionQuality(payload.connection_quality || {});
     updateSafeModeUi();
     updateLimitedModeUi();
+    updatePollProfileUi(payload.poll_profile || { id: pollProfile });
     updateErrorLog(payload.recent_errors || []);
     updateDemoModeUi();
     updateDemoPresetUi();
-        dismissStartup(payload.user_message || tr("scanner_ready", "Scanner klaar."));
+        dismissStartup(payload.user_message || tr("scanner_ready", "Scanner ready."));
 
     if (shouldHydrateFullData && (isConnected || demoMode)) {
         await fetchFullData();
@@ -552,16 +552,20 @@ async function fetchFullData() {
 
     updateDemoModeUi();
     updateDemoPresetUi();
-        dismissStartup(status.user_message || tr("scanner_ready", "Scanner klaar."));
+        dismissStartup(status.user_message || tr("scanner_ready", "Scanner ready."));
 }
 
 async function loadConfig() {
     try {
+        pollProfile = loadLocalPollProfile();
+        updatePollProfileUi({ id: pollProfile });
         const response = await fetch("/api/config");
         if (!response.ok) throw new Error(`Server returned status ${response.status}`);
         const config = await response.json();
         demoMode = Boolean(config.demo_mode);
         limitedMode = Boolean(config.limited_mode);
+        pollProfile = String(config.poll_profile?.id || pollProfile || "balanced");
+        saveLocalPollProfile(pollProfile);
         demoPreset = String(config.demo_preset || "idle");
         storeDemoPresets(config.demo_presets || []);
         const portInput = byId("port-input");
@@ -571,11 +575,12 @@ async function loadConfig() {
         renderPortOptions(config.detected_ports || [], config.obd_port || "");
         updateDemoModeUi();
         updateLimitedModeUi();
+        updatePollProfileUi(config.poll_profile || { id: pollProfile });
         updateDemoPresetUi();
-        setText("scope-badge", tr("scope_standard_obd", "Alleen standaard OBD"));
+        setText("scope-badge", tr("scope_standard_obd", "Standard OBD Only"));
     } catch (error) {
         console.error(error);
-        setText("port-result", tr("port_config_failed", "COM-configuratie kon niet worden geladen."));
+        setText("port-result", tr("port_config_failed", "Could not load COM configuration."));
     }
 }
 
@@ -606,7 +611,7 @@ function renderPortOptions(ports, selectedPort = "") {
         emptyOption = document.createElement("option");
         emptyOption.value = "";
     }
-    emptyOption.textContent = tr("port_dropdown_empty", "Geen COM-poort geselecteerd");
+    emptyOption.textContent = tr("port_dropdown_empty", "No COM port selected");
     portInput.appendChild(emptyOption);
 
     normalizedPorts.forEach((port) => {
@@ -657,7 +662,7 @@ function syncPortDropdownUi() {
     }));
     const selectedOption = options.find((option) => option.selected) || options[0];
 
-    valueElement.textContent = selectedOption?.label || tr("port_dropdown_empty", "Geen COM-poort geselecteerd");
+    valueElement.textContent = selectedOption?.label || tr("port_dropdown_empty", "No COM port selected");
     trigger.classList.toggle("is-empty", !selectedOption?.value);
 
     const fragment = document.createDocumentFragment();
@@ -673,11 +678,11 @@ function syncPortDropdownUi() {
 
         const primary = document.createElement("span");
         primary.className = "port-dropdown-option-primary";
-        primary.textContent = option.value || tr("port_dropdown_empty", "Geen COM-poort geselecteerd");
+        primary.textContent = option.value || tr("port_dropdown_empty", "No COM port selected");
 
         const secondary = document.createElement("span");
         secondary.className = "port-dropdown-option-secondary";
-        secondary.textContent = option.value ? option.label : tr("port_dropdown_helper", "Blijf vrij en forceer geen COM-poort.");
+        secondary.textContent = option.value ? option.label : tr("port_dropdown_helper", "Stay unlocked and do not force a COM port.");
 
         item.append(primary, secondary);
         item.addEventListener("click", () => {
@@ -759,48 +764,11 @@ function scheduleNextPoll() {
     pollTimer = window.setTimeout(fetchData, isConnected ? CONNECTED_POLL_MS : DISCONNECTED_POLL_MS);
 }
 
-function scheduleGaugePoll(delay = FAST_GAUGE_POLL_MS) {
-    window.clearTimeout(gaugePollTimer);
-    gaugePollTimer = window.setTimeout(fetchGaugeData, delay);
-}
-
-async function fetchGaugeData() {
-    if (gaugeRequestInFlight) {
-        scheduleGaugePoll(FAST_GAUGE_POLL_MS);
-        return;
-    }
-
-    gaugeRequestInFlight = true;
-    try {
-        const response = await fetch("/api/gauges", {
-            signal: AbortSignal.timeout(1000)
-        });
-        if (!response.ok) throw new Error(`Server returned status ${response.status}`);
-
-        const payload = await response.json();
-        const vehicle = {
-            rpm: payload.rpm || {},
-            speed: payload.speed || {},
-        };
-
-        if (!isFrozen && (payload.connected || payload.demo_mode)) {
-            updateGaugeTargets(vehicle);
-            updateCharts(vehicle);
-        }
-
-        scheduleGaugePoll((payload.connected || payload.demo_mode) ? FAST_GAUGE_POLL_MS : IDLE_GAUGE_POLL_MS);
-    } catch (error) {
-        scheduleGaugePoll(IDLE_GAUGE_POLL_MS);
-    } finally {
-        gaugeRequestInFlight = false;
-    }
-}
-
 function updateStatus(status, sessionState = {}) {
     const dot = byId("status-dot");
     const reconnectButton = byId("reconnect-button");
 
-    const portLabel = sessionState.port_label || status.current_port || tr("port_none_selected", "Geen COM-poort geselecteerd");
+    const portLabel = sessionState.port_label || status.current_port || tr("port_none_selected", "No COM port selected");
     demoMode = Boolean(status.demo_mode);
 
     if (dot && status.connecting) {
@@ -811,14 +779,14 @@ function updateStatus(status, sessionState = {}) {
         dot.classList.remove("online");
     }
 
-    const statusText = sessionState.status_label || (status.connecting ? tr("status_searching_adapter", "Adapter zoeken...") : demoMode ? tr("status_demo_active", "Demo-sessie actief") : status.connected ? tr("status_connected", "Voertuig verbonden") : tr("status_offline", "Verbinding offline"));
-    const adapterStateText = sessionState.adapter_label || (status.connecting ? tr("adapter_searching", "Zoeken") : demoMode ? tr("adapter_demo", "Demo") : status.connected ? tr("adapter_online", "Online") : tr("adapter_offline", "Offline"));
-    const systemStatusText = sessionState.system_label || (status.connecting ? tr("system_searching", "Zoeken") : demoMode ? tr("system_demo", "Demo") : status.connected ? tr("system_connected", "Verbonden") : tr("system_offline", "Offline"));
-    const liveStateText = demoMode ? tr("live_simulator", "Simulator") : status.connected ? tr("live_streaming", "Streamt") : status.connecting ? tr("live_waiting", "Wachten") : tr("live_no_data", "Geen data");
+    const statusText = sessionState.status_label || (status.connecting ? tr("status_searching_adapter", "Searching for adapter...") : demoMode ? tr("status_demo_active", "Demo session active") : status.connected ? tr("status_connected", "Vehicle connected") : tr("status_offline", "Connection offline"));
+    const adapterStateText = sessionState.adapter_label || (status.connecting ? tr("adapter_searching", "Searching") : demoMode ? tr("adapter_demo", "Demo") : status.connected ? tr("adapter_online", "Online") : tr("adapter_offline", "Offline"));
+    const systemStatusText = sessionState.system_label || (status.connecting ? tr("system_searching", "Searching") : demoMode ? tr("system_demo", "Demo") : status.connected ? tr("system_connected", "Connected") : tr("system_offline", "Offline"));
+    const liveStateText = demoMode ? tr("live_simulator", "Simulator") : status.connected ? tr("live_streaming", "Streaming") : status.connecting ? tr("live_waiting", "Waiting") : tr("live_no_data", "No Data");
     const connectionHintText = sessionState.detail || (
         status.connection_hint?.label
             ? `${status.connection_hint.label}. ${status.connection_hint.detail || ""}`
-            : tr("waiting_for_adapter", "Wachten op adapterdetectie.")
+            : tr("waiting_for_adapter", "Waiting for adapter detection.")
     );
 
     if (byId("status-text")?.textContent !== statusText) animateTextSwap(byId("status-text"));
@@ -830,13 +798,13 @@ function updateStatus(status, sessionState = {}) {
     setText("adapter-state", adapterStateText);
     setText("system-status", systemStatusText);
     setText("protocol", `${tr("protocol_prefix", "Protocol")}: ${status.protocol || "Unknown"}`);
-    setText("status-message", status.user_message || (status.connected ? tr("live_streaming", "Streamt") : status.error || tr("status_no_connection", "Geen verbinding")));
+    setText("status-message", status.user_message || status.error || tr("status_no_connection", "No connection"));
     setText("last-update", `${tr("update_prefix", "Update")}: ${status.last_update || "--"}`);
-    setText("last-successful-update", `${tr("last_live_prefix", "Laatste live data")}: ${status.last_successful_update || "--"}`);
+    setText("last-successful-update", `${tr("last_live_prefix", "Last live data")}: ${status.last_successful_update || "--"}`);
     setText("current-port", portLabel);
-    setText("system-protocol", status.protocol || tr("unknown", "Onbekend"));
+    setText("system-protocol", status.protocol || tr("unknown", "Unknown"));
     setText("system-port", portLabel);
-    setText("scope-badge", tr("scope_standard_obd", "Alleen standaard OBD"));
+    setText("scope-badge", tr("scope_standard_obd", "Standard OBD Only"));
     setText("live-state", liveStateText);
     setText("connection-hint", connectionHintText);
     updateDemoModeUi();
@@ -844,15 +812,15 @@ function updateStatus(status, sessionState = {}) {
     if (reconnectButton) {
         reconnectButton.disabled = Boolean(status.connecting);
         reconnectButton.classList.toggle("connecting", Boolean(status.connecting));
-        reconnectButton.innerText = status.connecting ? tr("reconnecting", "Opnieuw verbinden...") : tr("retry_connection", "Opnieuw verbinden");
+        reconnectButton.innerText = status.connecting ? tr("reconnecting", "Reconnecting...") : tr("retry_connection", "Retry Connection");
     }
 }
 
 function updateConnectionQuality(quality) {
     const items = [
         { id: "quality-adapter", label: tr("quality_adapter", "Adapter"), online: Boolean(quality.adapter_connected) },
-        { id: "quality-port", label: tr("quality_port", "OBD-poort"), online: Boolean(quality.port_powered) },
-        { id: "quality-car", label: tr("quality_car", "Auto"), online: Boolean(quality.car_connected) },
+        { id: "quality-port", label: tr("quality_port", "OBD Port"), online: Boolean(quality.port_powered) },
+        { id: "quality-car", label: tr("quality_car", "Car"), online: Boolean(quality.car_connected) },
         { id: "quality-live", label: tr("quality_live", "Live"), online: Boolean(quality.live_data_active) }
     ];
 
@@ -872,22 +840,29 @@ function updateConnectionQuality(quality) {
         if (previousState !== nextState) {
             element.dataset.online = nextState;
         }
-        element.innerHTML = `<span>${item.label}</span><strong>${item.online ? tr("quality_ok", "Online") : tr("quality_waiting", "Wachten")}</strong>`;
+        element.innerHTML = `<span>${item.label}</span><strong>${item.online ? tr("quality_ok", "Online") : tr("quality_waiting", "Waiting")}</strong>`;
     });
+
+    const summary = quality.quality || {};
+    const summaryElement = byId("adapter-quality-summary");
+    if (summaryElement) {
+        summaryElement.className = `adapter-quality-summary status-${summary.level || "info"}`;
+        summaryElement.innerHTML = `<strong>${summary.label || tr("unknown", "Unknown")}</strong><p>${summary.detail || ""}</p>`;
+    }
 }
 
 function updateDemoModeUi() {
     const button = byId("demo-mode-button");
     const copy = byId("demo-mode-copy");
     if (button) {
-        button.innerText = demoMode ? tr("demo_disable", "Demo-modus uitschakelen") : tr("demo_enable", "Demo-modus inschakelen");
+        button.innerText = demoMode ? tr("demo_disable", "Disable Demo Mode") : tr("demo_enable", "Enable Demo Mode");
         button.classList.toggle("is-active", demoMode);
     }
     if (copy) {
-        const presetLabel = demoPresetMeta.get(demoPreset)?.label || tr("idle", "Stationair");
+        const presetLabel = demoPresetMeta.get(demoPreset)?.label || tr("idle", "Idle");
         copy.innerText = demoMode
-            ? tr("demo_mode_live", "Demo-modus is actief op preset {preset} en blijft automatisch updaten.", { preset: presetLabel })
-            : tr("demo_mode_off", "Demo-modus is uit. Live ECU-data en echte voertuigreacties zijn actief wanneer de adapter verbonden is.");
+            ? tr("demo_mode_live", "Demo mode is live on the {preset} preset and keeps updating automatically.", { preset: presetLabel })
+            : tr("demo_mode_off", "Use demo mode to test the UI without a USB adapter or car.");
     }
 }
 
@@ -897,19 +872,58 @@ function updateLimitedModeUi() {
     const topbarState = byId("limited-mode-state");
     if (button) {
         button.innerText = limitedMode
-            ? tr("limited_mode_disable", "Limited Mode uitschakelen")
-            : tr("limited_mode_enable", "Limited Mode inschakelen");
+            ? tr("limited_mode_disable", "Disable Limited Mode")
+            : tr("limited_mode_enable", "Enable Limited Mode");
         button.classList.toggle("is-active", limitedMode);
     }
     if (copy) {
         copy.innerText = limitedMode
-            ? tr("limited_mode_live", "Limited Mode staat aan. Alleen RPM, snelheid, koelvloeistoftemperatuur, ECU-spanning, motorbelasting en long fuel trim worden uitgelezen.")
-            : tr("limited_mode_off_copy", "Limited Mode staat uit. De scanner leest de volledige live ECU-dataset uit.");
+            ? tr("limited_mode_live", "Limited Mode is on. Only RPM, speed, coolant temp, ECU voltage, engine load and long fuel trim are polled.")
+            : tr("limited_mode_off_copy", "Limited Mode is off. The scanner polls the full live ECU data set.");
     }
     if (topbarState) {
         topbarState.innerText = limitedMode
-            ? tr("limited_mode_on_short", "Aan")
-            : tr("limited_mode_off_short", "Uit");
+            ? tr("limited_mode_on_short", "On")
+            : tr("limited_mode_off_short", "Off");
+    }
+}
+
+function updatePollProfileUi(profile = {}) {
+    const active = String(profile.id || pollProfile || loadLocalPollProfile() || "balanced");
+    pollProfile = active;
+    document.querySelectorAll("[data-poll-profile]").forEach((button) => {
+        const isActive = button.dataset.pollProfile === active;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", String(isActive));
+    });
+
+    const copy = byId("poll-profile-copy");
+    if (copy) {
+        copy.innerText = tr(
+            `poll_profile_${active}_copy`,
+            profile.description || tr("poll_profile_copy", "Balanced is recommended. Performance feels faster, Safe reduces ECU and adapter load.")
+        );
+    }
+    const topbarState = byId("profile-state");
+    if (topbarState) {
+        topbarState.innerText = active.charAt(0).toUpperCase() + active.slice(1);
+    }
+}
+
+function loadLocalPollProfile() {
+    try {
+        const stored = window.localStorage.getItem(POLL_PROFILE_STORAGE_KEY);
+        return ["performance", "balanced", "safe"].includes(stored) ? stored : "balanced";
+    } catch {
+        return "balanced";
+    }
+}
+
+function saveLocalPollProfile(profile) {
+    try {
+        window.localStorage.setItem(POLL_PROFILE_STORAGE_KEY, profile);
+    } catch {
+        // Local storage can be unavailable in strict browser modes.
     }
 }
 
@@ -924,7 +938,7 @@ function updateDemoPresetUi() {
     });
 
     if (copy) {
-    copy.innerText = preset?.description || tr("demo_preset_calm", "Kies een rustige simulatorpreset voordat je de demometers gebruikt.");
+    copy.innerText = preset?.description || tr("demo_preset_calm", "Pick a calm simulator preset before driving the demo gauges.");
     }
 }
 
@@ -942,7 +956,7 @@ function updateErrorLog(errors) {
 
     if (!errors || errors.length === 0) {
         const empty = document.createElement("p");
-        empty.textContent = tr("errors_empty", "Geen fouten gelogd.");
+        empty.textContent = tr("errors_empty", "No errors logged.");
         errorLog.appendChild(empty);
         return;
     }
@@ -953,10 +967,10 @@ function updateErrorLog(errors) {
         row.style.animationDelay = `${Math.min(index * 28, 220)}ms`;
 
         const meta = document.createElement("span");
-        meta.textContent = `${item.time || "--"} - ${item.source || tr("unknown", "Onbekend")}`;
+        meta.textContent = `${item.time || "--"} - ${item.source || tr("unknown", "Unknown")}`;
 
         const message = document.createElement("strong");
-        message.textContent = item.message || tr("unknown_error", "Onbekende fout");
+        message.textContent = item.message || tr("unknown_error", "Unknown error");
 
         row.append(meta, message);
 
@@ -964,7 +978,7 @@ function updateErrorLog(errors) {
             const details = document.createElement("details");
             details.className = "technical-details";
             const summary = document.createElement("summary");
-        summary.textContent = tr("technical_details", "Technische details");
+        summary.textContent = tr("technical_details", "Technical details");
             const pre = document.createElement("pre");
             pre.textContent = item.technical_message;
             details.append(summary, pre);
@@ -979,32 +993,20 @@ function updateGaugeTargets(vehicle) {
     const nextRpm = numberFromValue(vehicle.rpm?.value);
     const nextSpeed = numberFromValue(vehicle.speed?.value);
 
-    if (nextRpm !== null && nextRpm !== undefined && Math.abs(nextRpm - targetRpm) >= RPM_TARGET_DEADBAND) {
-        targetRpm = nextRpm;
-    }
-    if (nextSpeed !== null && nextSpeed !== undefined && Math.abs(nextSpeed - targetSpeed) >= SPEED_TARGET_DEADBAND) {
-        targetSpeed = nextSpeed;
-    }
+    targetRpm = nextRpm;
+    targetSpeed = nextSpeed;
 }
 
-function smoothGaugeValue(current, target, velocity, dt, maxVelocity, snapDelta) {
+function smoothGaugeValue(current, target, velocity, dt, maxVelocity) {
     const difference = target - current;
-    if (Math.abs(difference) >= snapDelta) {
-        return {
-            current: target,
-            velocity: 0,
-        };
-    }
-
-    const acceleration = difference * GAUGE_STIFFNESS;
     const nextVelocity = clamp(
-        (velocity + acceleration * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
+        (velocity + difference * GAUGE_STIFFNESS * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
         -maxVelocity,
         maxVelocity
     );
     const nextCurrent = current + nextVelocity * dt;
 
-    if (Math.abs(target - nextCurrent) < 0.08 && Math.abs(nextVelocity) < 0.15) {
+    if (Math.abs(target - nextCurrent) < 0.15 && Math.abs(nextVelocity) < 0.2) {
         return {
             current: target,
             velocity: 0,
@@ -1053,14 +1055,13 @@ function drawLineChart(canvasId, values, color, maxValueHint = 100) {
         ctx.stroke();
     }
 
-    if (!values.length) {
-        return;
-    }
+    const cleanValues = (values && values.length ? values : [0, 0]).map((value) => (
+        Number.isFinite(Number(value)) ? Number(value) : 0
+    ));
+    const maxValue = Math.max(maxValueHint, ...cleanValues, 1);
+    const stepX = cleanValues.length > 1 ? width / (cleanValues.length - 1) : width;
 
-    const maxValue = Math.max(maxValueHint, ...values, 1);
-    const stepX = values.length > 1 ? width / (values.length - 1) : width;
-
-    const points = values.map((value, index) => ({
+    const points = cleanValues.map((value, index) => ({
         x: stepX * index,
         y: height - (Math.max(value, 0) / maxValue) * (height - 12) - 6
     }));
@@ -1073,7 +1074,7 @@ function drawLineChart(canvasId, values, color, maxValueHint = 100) {
     ctx.moveTo(points[0].x, points[0].y);
 
     if (points.length === 1) {
-        ctx.lineTo(points[0].x, points[0].y);
+        ctx.lineTo(width, points[0].y);
     } else {
         for (let index = 0; index < points.length - 1; index += 1) {
             const current = points[index];
@@ -1097,17 +1098,38 @@ function updateCharts(vehicle) {
     if (!speedChartPoints.length) {
         pushChartPoint(speedChartPoints, numberFromValue(vehicle.speed?.value));
     }
+    if (!coolantChartPoints.length) {
+        pushChartPoint(coolantChartPoints, numberFromValue(vehicle.coolant_temp?.value));
+    }
+    if (!voltageChartPoints.length) {
+        pushChartPoint(voltageChartPoints, numberFromValue(vehicle.control_voltage?.value || vehicle.voltage?.value));
+    }
+    if (!engineLoadChartPoints.length) {
+        pushChartPoint(engineLoadChartPoints, numberFromValue(vehicle.engine_load?.value));
+    }
+    if (!throttleChartPoints.length) {
+        pushChartPoint(throttleChartPoints, numberFromValue(vehicle.throttle?.value));
+    }
 }
 
 function renderCharts(now) {
     if (!lastChartSampleAt || now - lastChartSampleAt >= CHART_SAMPLE_MS) {
         pushChartPoint(rpmChartPoints, currentRpm);
         pushChartPoint(speedChartPoints, currentSpeed);
+        const vehicle = currentDisplayPayload(lastLivePayload || {})?.vehicle || {};
+        pushChartPoint(coolantChartPoints, numberFromValue(vehicle.coolant_temp?.value));
+        pushChartPoint(voltageChartPoints, numberFromValue(vehicle.control_voltage?.value || vehicle.voltage?.value));
+        pushChartPoint(engineLoadChartPoints, numberFromValue(vehicle.engine_load?.value));
+        pushChartPoint(throttleChartPoints, numberFromValue(vehicle.throttle?.value));
         lastChartSampleAt = now;
     }
 
     drawLineChart("rpm-chart", rpmChartPoints, "#e14d4d", 5000);
     drawLineChart("speed-chart", speedChartPoints, "#0d6efd", 160);
+    drawLineChart("coolant-chart", coolantChartPoints, "#0ca678", 130);
+    drawLineChart("voltage-chart", voltageChartPoints, "#f59f00", 16);
+    drawLineChart("engine-load-chart", engineLoadChartPoints, "#845ef7", 100);
+    drawLineChart("throttle-chart", throttleChartPoints, "#12b886", 100);
 }
 
 function updateHealth(health) {
@@ -1117,16 +1139,16 @@ function updateHealth(health) {
     const healthSignature = JSON.stringify({
         score,
         status,
-        headline: health.headline || tr("health_unavailable", "Gezondheidsrapport niet beschikbaar."),
+        headline: health.headline || tr("health_unavailable", "Health report unavailable."),
         counts
     });
 
     if (healthSignature !== lastRenderedHealthSignature) {
         lastRenderedHealthSignature = healthSignature;
         setText("health-score", score);
-    setText("health-headline", health.headline || tr("health_unavailable", "Gezondheidsrapport niet beschikbaar."));
+    setText("health-headline", health.headline || tr("health_unavailable", "Health report unavailable."));
         setClassName("health-status-badge", `health-status-badge status-${status}`);
-    setText("health-status-badge", status === "danger" ? tr("health_attention", "Aandacht") : status === "warning" ? tr("health_check", "Controleren") : tr("health_good", "Goed"));
+    setText("health-status-badge", status === "danger" ? tr("health_attention", "Attention") : status === "warning" ? tr("health_check", "Check") : tr("health_good", "Good"));
         setClassName("stored-status-pill", `status-pill ${counts.stored ? "status-danger" : "status-good"}`);
         setClassName("pending-status-pill", `status-pill ${counts.pending ? "status-warning" : "status-good"}`);
         setClassName("permanent-status-pill", `status-pill ${counts.permanent ? "status-warning" : "status-info"}`);
@@ -1156,7 +1178,7 @@ function updateHealth(health) {
             empty = document.createElement("div");
             empty.className = "checklist-item level-good";
             empty.dataset.key = "health-empty";
-            empty.innerHTML = `<strong>${tr("health_no_red_flags_title", "Geen duidelijke rode vlaggen uit de huidige scan.")}</strong><p>${tr("health_no_red_flags_copy", "Controleer nog steeds met een proefrit en visuele inspectie.")}</p>`;
+            empty.innerHTML = `<strong>${tr("health_no_red_flags_title", "No obvious red flags from current scan.")}</strong><p>${tr("health_no_red_flags_copy", "Still verify with a road test and visual inspection.")}</p>`;
             checklist.appendChild(empty);
         }
         return;
@@ -1182,7 +1204,7 @@ function updateHealth(health) {
         }
 
         row.className = `checklist-item level-${item.level || "info"}`;
-        row.querySelector("strong").textContent = item.title || tr("notice", "Melding");
+        row.querySelector("strong").textContent = item.title || tr("notice", "Notice");
         row.querySelector("p").textContent = item.detail || "";
     });
 }
@@ -1203,7 +1225,7 @@ function updateReadiness(readiness) {
                 child.remove();
             }
         });
-        ensureEmptyState(container, tr("readiness_empty", "Nog geen readiness-data beschikbaar."));
+        ensureEmptyState(container, tr("readiness_empty", "Readiness monitor data is not available yet."));
         return;
     }
 
@@ -1224,7 +1246,7 @@ function updateReadiness(readiness) {
         milRow.innerHTML = `<div><strong>MIL</strong><p></p></div>`;
         container.appendChild(milRow);
     }
-    milRow.querySelector("p").textContent = `${readiness.mil ? tr("readiness_on", "Aan") : tr("readiness_off", "Uit")} | ${tr("readiness_dtc_count", "DTC-aantal")}: ${readiness.dtc_count ?? "--"} | ${displayValue(readiness.ignition_type, tr("readiness_unknown_ignition", "Onbekende ontsteking"))}`;
+    milRow.querySelector("p").textContent = `${readiness.mil ? tr("readiness_on", "On") : tr("readiness_off", "Off")} | ${tr("readiness_dtc_count", "DTC count")}: ${readiness.dtc_count ?? "--"} | ${displayValue(readiness.ignition_type, tr("readiness_unknown_ignition", "Unknown ignition"))}`;
 
     (readiness.monitors || []).forEach((item, index) => {
         const rowKey = `monitor-${sanitizeKey(item.name)}`;
@@ -1238,10 +1260,10 @@ function updateReadiness(readiness) {
         row.className = `support-row ${item.complete ? "is-supported" : "is-unsupported"}`;
         row.style.animationDelay = `${Math.min(index * 18, 200)}ms`;
         row.querySelector("strong").textContent = item.name;
-        row.querySelector("p").textContent = item.available ? tr("support_yes", "Ondersteund") : tr("support_no", "Niet beschikbaar");
+        row.querySelector("p").textContent = item.available ? tr("support_yes", "Supported") : tr("support_no", "Unavailable");
         const badge = row.querySelector(".support-badge");
         badge.className = `support-badge ${item.complete ? "status-good" : "status-warning"}`;
-        badge.textContent = item.complete ? tr("readiness_ready", "Klaar") : tr("readiness_incomplete", "Incompleet");
+        badge.textContent = item.complete ? tr("readiness_ready", "Ready") : tr("readiness_incomplete", "Incomplete");
     });
 }
 
@@ -1261,7 +1283,7 @@ function updateFreezeFrame(freezeFrame) {
                 child.remove();
             }
         });
-        ensureEmptyState(container, tr("freeze_frame_empty", "Geen freeze-frame snapshot beschikbaar."));
+        ensureEmptyState(container, tr("freeze_frame_empty", "No freeze-frame snapshot available."));
         return;
     }
 
@@ -1300,7 +1322,7 @@ function updateReport(report) {
     }
     lastReportSignature = signature;
 
-    setText("report-headline", report.headline || tr("report_fallback_headline", "Aankoopsamenvatting"));
+    setText("report-headline", report.headline || tr("report_fallback_headline", "Pre-purchase summary"));
     const summaryItems = report.summary || [];
     const detailSections = report.sections || [];
 
@@ -1310,7 +1332,7 @@ function updateReport(report) {
                 child.remove();
             }
         });
-        ensureEmptyState(summary, tr("report_summary_empty", "Nog geen rapportsamenvatting beschikbaar."));
+        ensureEmptyState(summary, tr("report_summary_empty", "No report summary available yet."));
     } else {
         clearContainerEmptyState(summary);
         const nextKeys = new Set(summaryItems.map((_, index) => `summary-${index}`));
@@ -1340,7 +1362,7 @@ function updateReport(report) {
                 child.remove();
             }
         });
-        ensureEmptyState(sections, tr("report_details_empty", "Nog geen rapportdetails beschikbaar."));
+        ensureEmptyState(sections, tr("report_details_empty", "No report details available yet."));
     } else {
         clearContainerEmptyState(sections);
         const nextKeys = new Set(detailSections.map((section, index) => `section-${sanitizeKey(section.title || index)}`));
@@ -1370,18 +1392,18 @@ function updateBatteryCheck(battery) {
     const badge = byId("battery-status-badge");
     const status = battery.status || "unknown";
 
-    setText("battery-headline", battery.headline || tr("battery_unavailable", "Accucheck niet beschikbaar"));
-    setText("battery-detail", battery.detail || tr("battery_empty", "Spanningsdata is nog niet beschikbaar."));
+    setText("battery-headline", battery.headline || tr("battery_unavailable", "Battery check unavailable"));
+    setText("battery-detail", battery.detail || tr("battery_empty", "Voltage data is not available yet."));
 
     if (badge) {
         badge.className = `health-status-badge status-${status === "unknown" ? "info" : status}`;
         badge.textContent = status === "good"
-            ? tr("health_good", "Goed")
+            ? tr("health_good", "Good")
             : status === "warning"
-                ? tr("health_check", "Controleren")
+                ? tr("health_check", "Check")
                 : status === "danger"
-                    ? tr("health_attention", "Aandacht")
-                    : tr("unknown", "Onbekend");
+                    ? tr("health_attention", "Attention")
+                    : tr("unknown", "Unknown");
     }
 }
 
@@ -1395,17 +1417,17 @@ function updateSimpleSummary(summary) {
     if (button) {
         button.classList.toggle("is-active", simpleMode);
         button.setAttribute("aria-pressed", String(simpleMode));
-        button.textContent = simpleMode ? tr("simple_mode_hide", "Simple Mode verbergen") : tr("simple_mode_show", "Simple Mode tonen");
+        button.textContent = simpleMode ? tr("simple_mode_hide", "Hide Simple Mode") : tr("simple_mode_show", "Show Simple Mode");
     }
     if (!simpleMode) return;
 
-    setText("simple-summary-headline", summary.headline || tr("simple_summary_unavailable", "Simpele samenvatting niet beschikbaar."));
+    setText("simple-summary-headline", summary.headline || tr("simple_summary_unavailable", "Simple summary unavailable."));
     list.replaceChildren();
     (summary.items || []).forEach((item, index) => {
         const row = document.createElement("div");
         row.className = `checklist-item level-${summary.level || "info"}`;
         row.style.animationDelay = `${Math.min(index * 20, 180)}ms`;
-        row.innerHTML = `<strong>${summary.headline || tr("simple_summary", "Simpele samenvatting")}</strong><p></p>`;
+        row.innerHTML = `<strong>${summary.headline || tr("simple_summary", "Simple summary")}</strong><p></p>`;
         row.querySelector("p").textContent = item;
         list.appendChild(row);
     });
@@ -1420,9 +1442,9 @@ function updatePidSupportSummary(support) {
     const total = support.total ?? supported + unsupported;
 
     const cards = [
-        { label: tr("pid_supported", "Ondersteund"), value: supported },
-        { label: tr("pid_unsupported", "Niet ondersteund"), value: unsupported },
-        { label: tr("pid_total", "Totaal gecheckt"), value: total }
+        { label: tr("pid_supported", "Supported"), value: supported },
+        { label: tr("pid_unsupported", "Unsupported"), value: unsupported },
+        { label: tr("pid_total", "Total checked"), value: total }
     ];
 
     container.replaceChildren();
@@ -1438,34 +1460,8 @@ function toggleSimpleMode() {
     updateSimpleSummary(lastLivePayload?.simple_summary || {});
 }
 
-async function exportScanReport() {
-    if (!isFrozen || !frozenPayload) {
-        window.location.href = "/api/report/export";
-        return;
-    }
-
-    try {
-        const response = await fetch("/api/report/export", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(frozenPayload)
-        });
-        if (!response.ok) throw new Error(`Server returned status ${response.status}`);
-
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-        link.href = url;
-        link.download = `obd-scan-report-${timestamp}.html`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
-    } catch (error) {
-        console.error(error);
-        setText("report-action-result", tr("save_scan_failed", "Scan kon niet worden opgeslagen."));
-    }
+function exportScanReport() {
+    window.location.href = "/api/report/export";
 }
 
 function formatEngine(decoded) {
@@ -1504,7 +1500,7 @@ function renderVinExtraDetails(decoded) {
     if (!details.length) {
         clearContainerEmptyState(container);
         container.querySelectorAll(".spec-card").forEach((card) => card.remove());
-        ensureEmptyState(container, tr("vin_extra_empty", "De VIN-decoder gaf geen extra details terug voor dit voertuig."));
+        ensureEmptyState(container, tr("vin_extra_empty", "No additional VIN details were returned by the decoder for this vehicle."));
         return;
     }
 
@@ -1558,13 +1554,13 @@ function updateVehicleProfileView(profile) {
     const decoded = lastVehicleProfile.decoded || {};
     const rdw = lastVehicleProfile.rdw || {};
 
-    setText("vin-value", vin || tr("vin_not_loaded_short", "Niet geladen"));
-    setText("vin-message", lastVehicleProfile.vin_message || tr("vin_not_loaded", "VIN is nog niet geladen."));
+    setText("vin-value", vin || tr("vin_not_loaded_short", "Not loaded"));
+    setText("vin-message", lastVehicleProfile.vin_message || tr("vin_not_loaded", "VIN not loaded yet."));
     const manualVinInput = byId("manual-vin-input");
     if (manualVinInput && vin && document.activeElement !== manualVinInput) {
         manualVinInput.value = vin;
     }
-    setText("manual-vin-result", lastVehicleProfile.vin_message || tr("vin_manual_default", "Voer handmatig een VIN in wanneer de ECU deze niet automatisch teruggeeft."));
+    setText("manual-vin-result", lastVehicleProfile.vin_message || tr("vin_manual_default", "Enter a manual VIN when the ECU does not return one automatically."));
     setText("vin-make", displayValue(decoded.make));
     setText("vin-model", displayValue(decoded.model));
     setText("vin-year", displayValue(decoded.model_year));
@@ -1579,8 +1575,17 @@ function updateVehicleProfileView(profile) {
     if (plateInput && lastVehicleProfile.plate_query) {
         plateInput.value = lastVehicleProfile.plate_query;
     }
+    const garageVinInput = byId("garage-note-vin");
+    if (garageVinInput && vin && document.activeElement !== garageVinInput) {
+        garageVinInput.value = vin;
+    }
+    const garagePlateInput = byId("garage-note-plate");
+    if (garagePlateInput && lastVehicleProfile.plate_query && document.activeElement !== garagePlateInput) {
+        garagePlateInput.value = lastVehicleProfile.plate_query;
+    }
+    updateGarageActiveVehicle();
 
-    setText("plate-result", lastVehicleProfile.plate_message || tr("plate_default", "Voer handmatig een Nederlands kenteken in om RDW-data te laden."));
+    setText("plate-result", lastVehicleProfile.plate_message || tr("plate_default", "Enter a Dutch license plate manually to load RDW data."));
     setText("rdw-plate", displayValue(rdw.plate));
     setText("rdw-brand", displayValue(rdw.brand));
     setText("rdw-model", displayValue(rdw.model));
@@ -1596,13 +1601,13 @@ function updateVehicleProfileView(profile) {
     const refreshButton = byId("refresh-vin-button");
     if (refreshButton) {
         refreshButton.disabled = vinRefreshPending || lastVehicleProfile.vin_status === "loading";
-    refreshButton.innerText = (vinRefreshPending || lastVehicleProfile.vin_status === "loading") ? tr("reading", "Lezen...") : tr("read_vin", "VIN lezen");
+    refreshButton.innerText = (vinRefreshPending || lastVehicleProfile.vin_status === "loading") ? tr("reading", "Reading...") : tr("read_vin", "Read VIN");
     }
 
     const manualVinButton = byId("manual-vin-button");
     if (manualVinButton) {
         manualVinButton.disabled = vinRefreshPending || lastVehicleProfile.vin_status === "loading";
-        manualVinButton.innerText = (vinRefreshPending || lastVehicleProfile.vin_status === "loading") ? tr("adapter_searching", "Zoeken") + "..." : tr("search_vin", "VIN zoeken");
+        manualVinButton.innerText = (vinRefreshPending || lastVehicleProfile.vin_status === "loading") ? tr("adapter_searching", "Searching") + "..." : tr("search_vin", "Search VIN");
     }
 
     const clearVinButton = byId("clear-vin-button");
@@ -1627,11 +1632,11 @@ function renderGauges(now = performance.now()) {
     const dt = clamp(lastGaugeFrameAt ? (now - lastGaugeFrameAt) / 1000 : 1 / 60, 1 / 240, 0.05);
     lastGaugeFrameAt = now;
 
-    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY, RPM_SNAP_DELTA);
+    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY);
     currentRpm = rpmState.current;
     rpmVelocity = rpmState.velocity;
 
-    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY, SPEED_SNAP_DELTA);
+    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY);
     currentSpeed = speedState.current;
     speedVelocity = speedState.velocity;
 
@@ -1673,7 +1678,7 @@ function updateLiveData(vehicle) {
                 child.remove();
             }
         });
-        ensureEmptyState(grid, tr("no_live_data", "Nog geen live data beschikbaar."));
+        ensureEmptyState(grid, tr("no_live_data", "No live data available yet."));
         return;
     }
 
@@ -1703,11 +1708,11 @@ function updateLiveData(vehicle) {
         row.classList.toggle("is-no-data", hasNoData);
         row.querySelector(".sensor-label").textContent = item.label;
         row.querySelector(".sensor-row-meta").textContent = hasNoData
-            ? tr("sensor_unavailable", "Sensor nu niet beschikbaar")
+            ? tr("sensor_unavailable", "Sensor unavailable right now")
             : item.stale
-                ? tr("stale_at", "Verouderd | laatst ok {time}", { time: item.updated_at || "--" })
-                : tr("updated_at", "Bijgewerkt {time}", { time: item.updated_at || "--" });
-        row.querySelector(".sensor-value").textContent = hasNoData ? tr("sensor_no_data", "Geen data") : formatLiveValue(item.value, key);
+                ? tr("stale_at", "Stale | last ok {time}", { time: item.updated_at || "--" })
+                : tr("updated_at", "Updated {time}", { time: item.updated_at || "--" });
+        row.querySelector(".sensor-value").textContent = hasNoData ? tr("sensor_no_data", "No Data") : formatLiveValue(item.value, key);
     });
 }
 
@@ -1723,14 +1728,14 @@ function updateDtcStatus(status) {
     lastDtcStatus = { ...lastDtcStatus, ...status };
 
     const scanButton = byId("scan-codes-button");
-    const statusMessage = lastDtcStatus.message || tr("fault_codes_status", "Er is nog geen foutcodescan uitgevoerd.");
+    const statusMessage = lastDtcStatus.message || tr("fault_codes_status", "No fault code scan run yet.");
 
     setText("codes-status-message", statusMessage);
 
     if (scanButton) {
         const isScanning = codeScanPending || Boolean(lastDtcStatus.scanning);
         scanButton.disabled = isScanning;
-        scanButton.innerText = isScanning ? tr("scanning", "Scannen...") : tr("scan_codes", "Codes scannen");
+        scanButton.innerText = isScanning ? tr("scanning", "Scanning...") : tr("scan_codes", "Scan Codes");
     }
 }
 
@@ -1757,7 +1762,7 @@ function updateCodes(elementId, codes) {
     if (!codes || codes.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = lastDtcStatus.has_scan ? tr("fault_codes_empty", "Geen foutcodes gevonden.") : tr("fault_codes_scan_first", "Voer eerst een handmatige foutcodescan uit.");
+        empty.textContent = lastDtcStatus.has_scan ? tr("fault_codes_empty", "No fault codes found.") : tr("fault_codes_scan_first", "Run a manual fault code scan first.");
         container.appendChild(empty);
         return;
     }
@@ -1772,15 +1777,15 @@ function updateCodes(elementId, codes) {
         title.textContent = item.code;
 
         const description = document.createElement("p");
-    description.textContent = item.description_en || item.description || tr("no_description", "Geen beschrijving beschikbaar");
+    description.textContent = item.description_en || item.description || tr("no_description", "No description available");
 
         const meta = document.createElement("span");
         meta.className = "code-meta";
-    meta.textContent = `${item.system || tr("unknown_system", "Onbekend systeem")} - ${severityLabel(item.severity)}`;
+    meta.textContent = `${item.system || tr("unknown_system", "Unknown system")} - ${severityLabel(item.severity)}`;
 
         const action = document.createElement("p");
         action.className = "code-action";
-    action.textContent = item.action_hint || tr("inspect_code_hint", "Inspecteer deze code voordat je een beslissing neemt.");
+    action.textContent = item.action_hint || tr("inspect_code_hint", "Inspect this code before making a decision.");
 
         code.append(title, meta, description, action);
 
@@ -1817,7 +1822,7 @@ function severityLabel(severity) {
     if (severity === "high") return "High";
     if (severity === "medium") return "Medium";
     if (severity === "low") return "Low";
-    return tr("unknown", "Onbekend");
+    return tr("unknown", "Unknown");
 }
 
 function updateSafeModeUi() {
@@ -1826,13 +1831,13 @@ function updateSafeModeUi() {
     if (safeButton) {
         safeButton.classList.toggle("is-active", safeMode);
         safeButton.setAttribute("aria-pressed", String(safeMode));
-        safeButton.innerText = safeMode ? tr("safe_mode_on", "SAFE Modus Aan") : tr("safe_mode_off", "SAFE Modus Uit");
+        safeButton.innerText = safeMode ? tr("safe_mode_on", "SAFE Mode On") : tr("safe_mode_off", "SAFE Mode Off");
     }
     document.querySelectorAll("#clear-button, #clear-button-codes").forEach((button) => {
         button.disabled = safeMode;
     });
 
-    setText("system-mode", safeMode ? tr("system_mode_safe", "SAFE") : tr("system_mode_service", "Service actief"));
+    setText("system-mode", safeMode ? tr("system_mode_safe", "SAFE") : tr("system_mode_service", "Service enabled"));
 
     lastSafeModeRendered = safeMode;
 }
@@ -1842,8 +1847,8 @@ function updateFreezeUi() {
     const indicator = document.getElementById("freeze-indicator");
 
     button.classList.toggle("is-active", isFrozen);
-    button.innerText = isFrozen ? tr("freeze_resume", "Stream hervatten") : tr("freeze_pause", "Stream pauzeren");
-    indicator.innerText = isFrozen ? tr("freeze_frozen", "Live stream gepauzeerd voor controle") : tr("freeze_live", "Live stream actief");
+    button.innerText = isFrozen ? tr("freeze_resume", "Resume Stream") : tr("freeze_pause", "Freeze Stream");
+    indicator.innerText = isFrozen ? tr("freeze_frozen", "Live stream frozen for review") : tr("freeze_live", "Live stream active");
 }
 
 function toggleFreeze() {
@@ -1863,11 +1868,6 @@ function toggleFreeze() {
         };
         if (lastLivePayload) {
             frozenPayload = lastLivePayload;
-            frozenPayload.vehicle = {
-                ...(frozenPayload.vehicle || {}),
-                rpm: { ...(frozenPayload.vehicle?.rpm || {}), value: `${rpmText} RPM` },
-                speed: { ...(frozenPayload.vehicle?.speed || {}), value: `${speedText} km/h` }
-            };
         }
         isFrozen = true;
     }
@@ -1904,8 +1904,8 @@ async function reconnectObd() {
 
     button.disabled = true;
     button.classList.add("connecting");
-        button.innerText = tr("reconnecting", "Opnieuw verbinden...");
-    resultElement.innerText = tr("manual_reconnect_running", "Opnieuw verbinden met OBD-adapter...");
+        button.innerText = tr("reconnecting", "Reconnecting...");
+    resultElement.innerText = tr("manual_reconnect_running", "Reconnecting to OBD adapter...");
 
     try {
         const response = await fetch("/api/reconnect", {
@@ -1919,14 +1919,14 @@ async function reconnectObd() {
         isFrozen = false;
         frozenPayload = null;
         updateFreezeUi();
-    resultElement.innerText = result.message || tr("manual_reconnect_started", "Opnieuw verbinden gestart.");
+    resultElement.innerText = result.message || tr("manual_reconnect_started", "Reconnect started.");
         fetchData();
     } catch (error) {
         console.error(error);
-        resultElement.innerText = error.message || tr("manual_reconnect_failed", "Opnieuw verbinden mislukt.");
+        resultElement.innerText = error.message || tr("manual_reconnect_failed", "Reconnect failed.");
         button.disabled = false;
         button.classList.remove("connecting");
-        button.innerText = tr("retry_connection", "Opnieuw verbinden");
+        button.innerText = tr("retry_connection", "Retry Connection");
     }
 }
 
@@ -1934,7 +1934,7 @@ async function fetchVehicleProfile(force = false) {
     if (vinRefreshPending && !force) return;
 
     vinRefreshPending = true;
-    updateVehicleProfileView({ vin_status: "loading", vin_message: tr("vin_reading_vehicle", "VIN uit voertuig lezen...") });
+    updateVehicleProfileView({ vin_status: "loading", vin_message: tr("vin_reading_vehicle", "Reading VIN from vehicle...") });
 
     try {
         const response = await fetch("/api/vehicle/refresh", {
@@ -1946,7 +1946,7 @@ async function fetchVehicleProfile(force = false) {
         if (!response.ok || !result.success) throw new Error(result.message || `Server returned status ${response.status}`);
     } catch (error) {
         console.error(error);
-        document.getElementById("vin-message").innerText = error.message || tr("vin_lookup_failed", "VIN lookup mislukt.");
+        document.getElementById("vin-message").innerText = error.message || tr("vin_lookup_failed", "VIN lookup failed.");
     } finally {
         vinRefreshPending = false;
     }
@@ -1958,7 +1958,7 @@ async function savePlateLookup(event) {
     const plateInput = document.getElementById("plate-input");
     const resultElement = document.getElementById("plate-result");
 
-    resultElement.innerText = tr("rdw_lookup_loading", "RDW-voertuigdata opzoeken...");
+    resultElement.innerText = tr("rdw_lookup_loading", "Looking up RDW vehicle data...");
 
     try {
         const response = await fetch("/api/vehicle/plate", {
@@ -1972,11 +1972,11 @@ async function savePlateLookup(event) {
         saveVehicleLookupHistory({
             type: "plate",
             value: plateInput.value.trim().toUpperCase(),
-            label: tr("history_type_plate", "Kenteken")
+            label: tr("history_type_plate", "Plate")
         });
     } catch (error) {
         console.error(error);
-        resultElement.innerText = error.message || tr("rdw_lookup_failed", "RDW lookup mislukt.");
+        resultElement.innerText = error.message || tr("rdw_lookup_failed", "RDW lookup failed.");
     }
 }
 
@@ -1989,11 +1989,11 @@ async function saveManualVin(event) {
     const resultElement = document.getElementById("manual-vin-result");
 
     vinRefreshPending = true;
-    resultElement.innerText = tr("vin_lookup_loading", "VIN opzoeken...");
+    resultElement.innerText = tr("vin_lookup_loading", "Looking up VIN...");
     updateVehicleProfileView({
         vin: vinInput.value.trim().toUpperCase(),
         vin_status: "loading",
-        vin_message: tr("vin_processing", "Handmatige VIN verwerken...")
+        vin_message: tr("vin_processing", "Processing manual VIN...")
     });
 
     try {
@@ -2010,10 +2010,10 @@ async function saveManualVin(event) {
             value: vinInput.value.trim().toUpperCase(),
             label: tr("history_type_vin", "VIN")
         });
-        resultElement.innerText = result.message || tr("vin_found", "VIN gevonden.");
+        resultElement.innerText = result.message || tr("vin_found", "VIN found.");
     } catch (error) {
         console.error(error);
-        resultElement.innerText = error.message || tr("vin_lookup_failed", "VIN lookup mislukt.");
+        resultElement.innerText = error.message || tr("vin_lookup_failed", "VIN lookup failed.");
     } finally {
         vinRefreshPending = false;
         updateVehicleProfileView({});
@@ -2028,7 +2028,7 @@ function clearManualVinInput() {
 
     vinInput.value = "";
     if (resultElement) {
-        resultElement.innerText = tr("vin_input_cleared", "VIN-invoer gewist.");
+        resultElement.innerText = tr("vin_input_cleared", "VIN input cleared.");
     }
 }
 
@@ -2083,7 +2083,7 @@ function renderVehicleLookupHistory() {
     if (!historyItems.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = tr("history_empty", "Nog geen geschiedenis.");
+        empty.textContent = tr("history_empty", "No lookup history yet.");
         historyElement.appendChild(empty);
         return;
     }
@@ -2128,7 +2128,7 @@ async function savePort(event) {
     const resultElement = document.getElementById("port-result");
     const port = portInput.value.trim();
 
-    resultElement.innerText = tr("port_save_loading", "COM-poort opslaan...");
+    resultElement.innerText = tr("port_save_loading", "Saving COM port...");
 
     try {
         const response = await fetch("/api/config/port", {
@@ -2141,11 +2141,11 @@ async function savePort(event) {
 
         portInput.value = result.obd_port || "";
         renderPortOptions(result.detected_ports || [], result.obd_port || "");
-        resultElement.innerText = result.message || tr("port_saved", "COM-poort opgeslagen.");
+        resultElement.innerText = result.message || tr("port_saved", "COM port saved.");
         fetchData();
     } catch (error) {
         console.error(error);
-        resultElement.innerText = error.message || tr("port_save_failed", "COM-poort kon niet worden opgeslagen.");
+        resultElement.innerText = error.message || tr("port_save_failed", "Could not save COM port.");
     }
 }
 
@@ -2213,6 +2213,34 @@ async function toggleLimitedMode() {
     }
 }
 
+async function setPollProfile(profile) {
+    pollProfile = String(profile || "balanced");
+    saveLocalPollProfile(pollProfile);
+    updatePollProfileUi({ id: pollProfile });
+
+    try {
+        const response = await fetch("/api/poll-profile", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ profile: pollProfile })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.message || `Server returned status ${response.status}`);
+        }
+
+        pollProfile = String(result.poll_profile?.id || pollProfile);
+        limitedMode = Boolean(result.limited_mode);
+        updateLimitedModeUi();
+        updatePollProfileUi(result.poll_profile || { id: pollProfile });
+        fetchSupportedSensors();
+        fetchData();
+    } catch (error) {
+        console.error(error);
+        updatePollProfileUi({ id: pollProfile });
+    }
+}
+
 async function setDemoPreset(preset) {
     if (demoPresetRequestPending) return;
 
@@ -2250,8 +2278,8 @@ async function testConnection() {
     if (!button || !resultElement || !stepsContainer) return;
 
     button.disabled = true;
-    button.innerText = tr("testing", "Testen...");
-    resultElement.innerText = tr("connection_test_running", "Adapter- en ECU-verbinding testen...");
+    button.innerText = tr("testing", "Testing...");
+    resultElement.innerText = tr("connection_test_running", "Testing adapter and ECU connection...");
     stepsContainer.replaceChildren();
 
     try {
@@ -2261,13 +2289,13 @@ async function testConnection() {
         });
         const result = await response.json();
 
-        resultElement.innerText = result.phase || (result.success ? tr("connection_test_passed", "Verbindingstest geslaagd.") : tr("connection_test_failed", "Verbindingstest mislukt."));
+        resultElement.innerText = result.phase || (result.success ? tr("connection_test_passed", "Connection test passed.") : tr("connection_test_failed", "Connection test failed."));
 
         const steps = result.steps || [];
         if (steps.length === 0) {
             const empty = document.createElement("div");
             empty.className = "empty";
-            empty.textContent = tr("connection_test_empty", "Geen diagnosestappen teruggekregen.");
+            empty.textContent = tr("connection_test_empty", "No diagnostic steps returned.");
             stepsContainer.appendChild(empty);
         }
 
@@ -2280,10 +2308,10 @@ async function testConnection() {
         });
     } catch (error) {
         console.error(error);
-        resultElement.innerText = tr("connection_test_failed", "Verbindingstest mislukt.");
+        resultElement.innerText = tr("connection_test_failed", "Connection test failed.");
     } finally {
         button.disabled = false;
-        button.innerText = tr("test_connection", "Verbinding testen");
+        button.innerText = tr("test_connection", "Test Connection");
     }
 }
 
@@ -2294,7 +2322,7 @@ async function scanCodes() {
     updateDtcStatus({
         ...lastDtcStatus,
         scanning: true,
-            message: tr("scanning_fault_codes", "Foutcodes scannen...")
+            message: tr("scanning_fault_codes", "Scanning fault codes...")
     });
 
     try {
@@ -2320,7 +2348,7 @@ async function scanCodes() {
             ...lastDtcStatus,
             has_scan: false,
             scanning: false,
-            message: error.message || tr("fault_code_scan_failed", "Foutcodescan mislukt.")
+            message: error.message || tr("fault_code_scan_failed", "Fault code scan failed.")
         });
     } finally {
         codeScanPending = false;
@@ -2335,24 +2363,24 @@ async function clearDTC() {
 
     if (safeMode) {
         if (resultElement) {
-            resultElement.innerText = tr("clear_codes_blocked", "SAFE Modus staat aan. Zet SAFE Modus uit om foutcodes te wissen.");
+            resultElement.innerText = tr("clear_codes_blocked", "SAFE Mode is on. Turn SAFE Mode off to clear fault codes.");
         }
         return;
     }
 
     const confirmed = await openConfirmDialog(
-        tr("clear_codes_confirm_title", "Foutcodes wissen?"),
-        tr("clear_codes_confirm_message", "Weet je zeker dat je alle motor- en ECU-foutcodes wilt wissen?")
+        tr("clear_codes_confirm_title", "Clear fault codes?"),
+        tr("clear_codes_confirm_message", "Are you sure you want to clear all engine and ECU fault codes?")
     );
     if (!confirmed) {
         if (resultElement) {
-        resultElement.innerText = tr("clear_cancelled", "Wissen geannuleerd.");
+        resultElement.innerText = tr("clear_cancelled", "Clear cancelled.");
         }
         return;
     }
 
     if (resultElement) {
-    resultElement.innerText = tr("clear_sending", "Wisopdracht verzenden...");
+    resultElement.innerText = tr("clear_sending", "Sending clear command...");
     }
     if (clearButton) {
         clearButton.disabled = true;
@@ -2366,19 +2394,19 @@ async function clearDTC() {
         });
         const result = await response.json();
         if (resultElement) {
-        resultElement.innerText = result.message || tr("command_processed", "Opdracht verwerkt.");
+        resultElement.innerText = result.message || tr("command_processed", "Command processed.");
         }
         updateDtcStatus({
             has_scan: lastDtcStatus.has_scan,
             scanning: false,
             last_scan: lastDtcStatus.last_scan || null,
-            message: tr("clear_codes_sent_verify", "Wisopdracht verzonden. Scan opnieuw om te controleren of de ECU schoon is.")
+            message: tr("clear_codes_sent_verify", "Clear command sent. Run a new scan to verify the ECU is clean.")
         });
         fetchData();
     } catch (error) {
         console.error(error);
         if (resultElement) {
-        resultElement.innerText = tr("clear_command_failed", "Wisopdracht mislukt. Controleer de verbinding.");
+        resultElement.innerText = tr("clear_command_failed", "Clear command failed. Check the connection.");
         }
     } finally {
         updateSafeModeUi();
@@ -2389,8 +2417,8 @@ async function fetchSupportedSensors() {
     const supportedContainer = document.getElementById("supported-sensors");
     const unsupportedContainer = document.getElementById("unsupported-sensors");
 
-    supportedContainer.innerHTML = `<p>${tr("supported_loading", "Ondersteunde sensoren laden...")}</p>`;
-    unsupportedContainer.innerHTML = `<p>${tr("unsupported_loading", "Niet-ondersteunde sensoren laden...")}</p>`;
+    supportedContainer.innerHTML = `<p>${tr("supported_loading", "Loading supported sensors...")}</p>`;
+    unsupportedContainer.innerHTML = `<p>${tr("unsupported_loading", "Loading unsupported sensors...")}</p>`;
 
     try {
         const response = await fetch("/api/supported");
@@ -2398,16 +2426,16 @@ async function fetchSupportedSensors() {
         setText(
             "standard-obd-note",
             result.standard_obd_only
-            ? tr("standard_obd_note", "Alleen standaard OBD: motor- en emissiegerelateerde ECU-codes. ABS, airbag en bodymodules kunnen een merk-specifieke scanner vereisen.")
-            : tr("enhanced_module_active", "Uitgebreide moduleondersteuning actief.")
+            ? tr("standard_obd_note", "Standard OBD only: engine and emission related ECU codes. ABS, airbag and body modules may require a brand-specific scanner.")
+            : tr("enhanced_module_active", "Enhanced module support active.")
         );
         updatePidSupportSummary(result);
         renderSensorSupportList(supportedContainer, result.supported || [], true);
         renderSensorSupportList(unsupportedContainer, result.unsupported || [], false);
     } catch (error) {
         console.error(error);
-        supportedContainer.innerHTML = `<p>${tr("supported_failed", "Ondersteunde sensorlijst kon niet worden geladen.")}</p>`;
-        unsupportedContainer.innerHTML = `<p>${tr("unsupported_failed", "Niet-ondersteunde sensorlijst kon niet worden geladen.")}</p>`;
+        supportedContainer.innerHTML = `<p>${tr("supported_failed", "Could not load supported sensor list.")}</p>`;
+        unsupportedContainer.innerHTML = `<p>${tr("unsupported_failed", "Could not load unsupported sensor list.")}</p>`;
     }
 }
 
@@ -2417,7 +2445,7 @@ function renderSensorSupportList(container, items, supported) {
     if (!items.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = supported ? tr("supported_empty", "Nog geen ondersteunde sensoren gedetecteerd.") : tr("unsupported_empty", "Nog geen info over niet-ondersteunde sensoren.");
+        empty.textContent = supported ? tr("supported_empty", "No supported sensors detected yet.") : tr("unsupported_empty", "No unsupported sensor info yet.");
         container.appendChild(empty);
         return;
     }
@@ -2432,7 +2460,7 @@ function renderSensorSupportList(container, items, supported) {
 
         const badge = document.createElement("span");
         badge.className = `support-badge ${supported ? "status-good" : "status-warning"}`;
-        badge.textContent = supported ? tr("available", "Beschikbaar") : tr("not_supported", "Niet ondersteund");
+        badge.textContent = supported ? tr("available", "Available") : tr("not_supported", "Not supported");
 
         row.append(left, badge);
         container.appendChild(row);
@@ -2479,7 +2507,7 @@ function openConfirmDialog(title, message) {
 
 async function fetchScanHistory() {
     const history = document.getElementById("scan-history");
-    history.innerHTML = `<p>${tr("loading_saved_scans", "Opgeslagen scans laden...")}</p>`;
+    history.innerHTML = `<p>${tr("loading_saved_scans", "Loading saved scans...")}</p>`;
 
     try {
         const response = await fetch("/api/scans");
@@ -2487,7 +2515,7 @@ async function fetchScanHistory() {
         renderScanHistory(scans || []);
     } catch (error) {
         console.error(error);
-        history.innerHTML = `<p>${tr("saved_scans_failed", "Opgeslagen scangeschiedenis kon niet worden geladen.")}</p>`;
+        history.innerHTML = `<p>${tr("saved_scans_failed", "Could not load saved scan history.")}</p>`;
     }
 }
 
@@ -2498,7 +2526,7 @@ function renderScanHistory(scans) {
     if (!scans.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = tr("no_scans_saved", "Nog geen scans opgeslagen.");
+        empty.textContent = tr("no_scans_saved", "No scans saved yet.");
         history.appendChild(empty);
         return;
     }
@@ -2510,13 +2538,13 @@ function renderScanHistory(scans) {
 
         const meta = document.createElement("div");
         const scanStatus = scan.payload?.status || {};
-        const connectionLabel = scanStatus.connected ? tr("history_connection_connected", "Verbonden") : tr("history_connection_offline", "Offline");
-        meta.innerHTML = `<strong>${scan.label}</strong><p>${scan.created_at}</p><span>${scan.summary}</span><p>${connectionLabel} | ${scanStatus.protocol || "Unknown"} | ${scanStatus.current_port || tr("port_none_selected", "Geen COM-poort geselecteerd")}</p>`;
+        const connectionLabel = scanStatus.connected ? tr("history_connection_connected", "Connected") : tr("history_connection_offline", "Offline");
+        meta.innerHTML = `<strong>${scan.label}</strong><p>${scan.created_at}</p><span>${scan.summary}</span><p>${connectionLabel} | ${scanStatus.protocol || "Unknown"} | ${scanStatus.current_port || tr("port_none_selected", "No COM port selected")}</p>`;
 
         const payload = scan.payload || {};
         const detail = document.createElement("div");
         detail.className = "history-health";
-        detail.innerHTML = `<strong>${displayValue(payload.health?.score, "--")}</strong><p>${tr("history_health_score", "Gezondheidsscore")}</p>`;
+        detail.innerHTML = `<strong>${displayValue(payload.health?.score, "--")}</strong><p>${tr("history_health_score", "Health score")}</p>`;
 
         row.append(meta, detail);
         history.appendChild(row);
@@ -2525,17 +2553,17 @@ function renderScanHistory(scans) {
 
 async function saveScanToDatabase() {
     const resultElement = document.getElementById("save-scan-result") || document.getElementById("report-action-result");
-    await saveScanSnapshotToResult(resultElement, tr("save_scan_label", "Handmatige dashboard snapshot"));
+    await saveScanSnapshotToResult(resultElement, tr("save_scan_label", "Manual dashboard snapshot"));
 }
 
 async function saveReportSnapshot() {
     const resultElement = document.getElementById("report-action-result");
-    await saveScanSnapshotToResult(resultElement, tr("report_snapshot_label", "Handmatige rapportsnapshot"));
+    await saveScanSnapshotToResult(resultElement, tr("report_snapshot_label", "Manual report snapshot"));
 }
 
 async function saveScanSnapshotToResult(resultElement, label) {
     if (!resultElement) return;
-    resultElement.innerText = tr("save_scan_saving", "Huidige scan opslaan in database...");
+    resultElement.innerText = tr("save_scan_saving", "Saving current scan to database...");
 
     try {
         const response = await fetch("/api/scans/save", {
@@ -2546,11 +2574,140 @@ async function saveScanSnapshotToResult(resultElement, label) {
         const result = await response.json();
         if (!response.ok || !result.success) throw new Error(result.message || `Server returned status ${response.status}`);
 
-        resultElement.innerText = tr("scan_saved_at", "{label} opgeslagen om {time}.", { label: result.scan.label, time: result.scan.created_at });
+        resultElement.innerText = tr("scan_saved_at", "{label} saved at {time}.", { label: result.scan.label, time: result.scan.created_at });
         renderScanHistory(result.scans || []);
     } catch (error) {
         console.error(error);
-        resultElement.innerText = error.message || tr("save_scan_failed", "Scan kon niet worden opgeslagen.");
+        resultElement.innerText = error.message || tr("save_scan_failed", "Could not save the scan.");
+    }
+}
+
+function garageFilterParams() {
+    const params = new URLSearchParams();
+    const vin = (byId("garage-filter-vin")?.value || "").trim().toUpperCase();
+    const plate = (byId("garage-filter-plate")?.value || "").trim().toUpperCase();
+    if (vin) params.set("vin", vin);
+    if (plate) params.set("plate", plate);
+    return params;
+}
+
+function updateGarageActiveVehicle() {
+    const target = byId("garage-active-vehicle");
+    if (!target) return;
+    const vin = lastVehicleProfile.vin || byId("garage-note-vin")?.value || "--";
+    const plate = lastVehicleProfile.plate_query || byId("garage-note-plate")?.value || "--";
+    const strong = target.querySelector("strong");
+    if (strong) {
+        strong.textContent = `VIN: ${vin || "--"} | ${tr("history_type_plate", "Plate")}: ${plate || "--"}`;
+    }
+}
+
+async function fetchGarageNotes() {
+    const list = byId("garage-notes-list");
+    if (!list) return;
+    list.innerHTML = `<p>${tr("garage_loading", "Loading garage notes...")}</p>`;
+
+    try {
+        const params = garageFilterParams();
+        const response = await fetch(`/api/garage-notes${params.toString() ? `?${params.toString()}` : ""}`);
+        const notes = await response.json();
+        renderGarageNotes(notes || []);
+    } catch (error) {
+        console.error(error);
+        list.innerHTML = `<p>${tr("garage_failed", "Could not load garage notes.")}</p>`;
+    }
+}
+
+function renderGarageNotes(notes) {
+    const list = byId("garage-notes-list");
+    if (!list) return;
+    list.replaceChildren();
+
+    if (!notes.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = tr("garage_filter_empty", "No garage notes match this VIN or plate.");
+        list.appendChild(empty);
+        return;
+    }
+
+    notes.forEach((note, index) => {
+        const row = document.createElement("div");
+        row.className = "history-row garage-note-row";
+        row.style.animationDelay = `${Math.min(index * 24, 260)}ms`;
+        const identity = [note.vin, note.plate].filter(Boolean).join(" | ") || "--";
+        row.innerHTML = `
+            <div>
+                <strong>${note.title || tr("garage_note", "Garage note")}</strong>
+                <p>${note.created_at || "--"} | ${identity} | ${note.mileage || "--"}</p>
+                <span>${note.note || ""}</span>
+            </div>
+            <div class="history-health">
+                <strong>${displayValue(note.payload?.health?.score, "--")}</strong>
+                <p>${tr("history_health_score", "Health score")}</p>
+            </div>
+        `;
+        list.appendChild(row);
+    });
+}
+
+function clearGarageFilter() {
+    const vin = byId("garage-filter-vin");
+    const plate = byId("garage-filter-plate");
+    if (vin) vin.value = "";
+    if (plate) plate.value = "";
+    fetchGarageNotes();
+}
+
+function exportGarageNotes() {
+    const params = garageFilterParams();
+    window.location.href = `/api/garage-notes/export${params.toString() ? `?${params.toString()}` : ""}`;
+}
+
+async function saveGarageNote(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const resultElement = byId("garage-note-result");
+    const vin = (byId("garage-note-vin")?.value || "").trim().toUpperCase();
+    const plate = (byId("garage-note-plate")?.value || "").trim().toUpperCase();
+    const noteText = byId("garage-note-text")?.value || "";
+
+    if (!vin || !plate) {
+        setText("garage-note-result", tr("garage_identity_required", "Enter both VIN and license plate before saving a garage note."));
+        return;
+    }
+
+    if (!noteText.trim()) {
+        setText("garage-note-result", tr("garage_note_required", "Write a note before saving."));
+        return;
+    }
+
+    setText("garage-note-result", tr("garage_saving", "Saving garage note..."));
+
+    try {
+        const response = await fetch("/api/garage-notes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                vin,
+                plate,
+                title: byId("garage-note-title")?.value || "",
+                mileage: byId("garage-note-mileage")?.value || "",
+                note: noteText
+            })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.message || `Server returned status ${response.status}`);
+        if (resultElement) {
+            resultElement.innerText = tr("garage_saved", "Garage note saved at {time}.", { time: result.note?.created_at || "--" });
+        }
+        form.reset();
+        renderGarageNotes(result.notes || []);
+        updateVehicleProfileView(lastVehicleProfile);
+        fetchGarageNotes();
+    } catch (error) {
+        console.error(error);
+        setText("garage-note-result", error.message || tr("garage_save_failed", "Garage note could not be saved."));
     }
 }
 
@@ -2571,20 +2728,56 @@ function initLanguageSwitcher() {
     });
 }
 
-document.getElementById("safe-mode-button").addEventListener("click", toggleSafeMode);
-document.getElementById("freeze-button").addEventListener("click", toggleFreeze);
-document.getElementById("clear-button").addEventListener("click", clearDTC);
-document.getElementById("clear-button-codes").addEventListener("click", clearDTC);
-document.getElementById("port-form").addEventListener("submit", savePort);
-document.getElementById("port-input").addEventListener("change", savePort);
-document.getElementById("reconnect-button").addEventListener("click", reconnectObd);
-document.getElementById("refresh-vin-button").addEventListener("click", () => fetchVehicleProfile(true));
-document.getElementById("manual-vin-form").addEventListener("submit", saveManualVin);
-document.getElementById("clear-vin-button").addEventListener("click", clearManualVinInput);
-document.getElementById("plate-form").addEventListener("submit", savePlateLookup);
-document.getElementById("scan-codes-button").addEventListener("click", scanCodes);
-document.getElementById("refresh-supported-button").addEventListener("click", fetchSupportedSensors);
-document.getElementById("save-scan-button").addEventListener("click", saveScanToDatabase);
+function resetUiCache() {
+    try {
+        window.localStorage.removeItem(POLL_PROFILE_STORAGE_KEY);
+        window.localStorage.removeItem(VEHICLE_LOOKUP_HISTORY_KEY);
+    } catch {
+        // Ignore strict browser storage failures.
+    }
+    document.cookie = "obd_lang=; path=/; max-age=0; SameSite=Lax";
+    setText("save-scan-result", tr("ui_cache_reset", "UI cache cleared. The page will reload."));
+    window.setTimeout(() => window.location.reload(), 350);
+}
+
+function initPollProfileButtons() {
+    pollProfile = loadLocalPollProfile();
+    updatePollProfileUi({ id: pollProfile });
+    document.querySelectorAll("[data-poll-profile]").forEach((button) => {
+        button.disabled = false;
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            setPollProfile(button.dataset.pollProfile || "balanced");
+        });
+    });
+}
+
+function on(id, eventName, handler) {
+    const element = byId(id);
+    if (element) {
+        element.addEventListener(eventName, handler);
+    }
+}
+
+initPollProfileButtons();
+on("safe-mode-button", "click", toggleSafeMode);
+on("freeze-button", "click", toggleFreeze);
+on("clear-button", "click", clearDTC);
+on("clear-button-codes", "click", clearDTC);
+on("port-form", "submit", savePort);
+on("port-input", "change", savePort);
+on("reconnect-button", "click", reconnectObd);
+on("refresh-vin-button", "click", () => fetchVehicleProfile(true));
+on("manual-vin-form", "submit", saveManualVin);
+on("clear-vin-button", "click", clearManualVinInput);
+on("plate-form", "submit", savePlateLookup);
+on("scan-codes-button", "click", scanCodes);
+on("refresh-supported-button", "click", fetchSupportedSensors);
+on("save-scan-button", "click", saveScanToDatabase);
+on("reset-ui-cache-button", "click", resetUiCache);
+on("garage-filter-button", "click", fetchGarageNotes);
+on("garage-clear-filter-button", "click", clearGarageFilter);
+on("garage-export-button", "click", exportGarageNotes);
 const reportExportButton = byId("report-export-button");
 if (reportExportButton) {
     reportExportButton.addEventListener("click", exportScanReport);
@@ -2614,6 +2807,21 @@ const testConnectionButton = byId("test-connection-button");
 if (testConnectionButton) {
     testConnectionButton.addEventListener("click", testConnection);
 }
+const garageNoteForm = byId("garage-note-form");
+if (garageNoteForm) {
+    garageNoteForm.addEventListener("submit", saveGarageNote);
+}
+["garage-filter-vin", "garage-filter-plate"].forEach((id) => {
+    const input = byId(id);
+    if (input) {
+        input.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                fetchGarageNotes();
+            }
+        });
+    }
+});
 
 initLanguageSwitcher();
 initPortDropdown();
@@ -2622,12 +2830,12 @@ initDashboardLauncher();
 initPageFromHash();
 updateFreezeUi();
 requestAnimationFrame(renderGauges);
-scheduleGaugePoll();
 armStartupFallback();
 loadConfig();
 schedulePortPoll();
 fetchSupportedSensors();
 fetchScanHistory();
+fetchGarageNotes();
 renderVehicleLookupHistory();
 fetchData();
 window.addEventListener("load", () => {

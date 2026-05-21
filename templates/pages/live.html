@@ -48,6 +48,10 @@
                 <div id="quality-car" class="quality-pill is-offline">{{ i18n.js.quality_car }}</div>
                 <div id="quality-live" class="quality-pill is-offline">{{ i18n.js.quality_live }}</div>
                 </div>
+                <div id="adapter-quality-summary" class="adapter-quality-summary status-info">
+                    <strong>{{ i18n.common.unknown }}</strong>
+                    <p>{{ i18n.partials.sidebar.connection_hint }}</p>
+                </div>
             </article>
 
             <section class="quick-metrics-grid live-metrics-grid">
@@ -152,6 +156,22 @@
             <div class="graph-card">
                     <span>{{ i18n.live.vehicle_speed }}</span>
                 <canvas id="speed-chart" width="560" height="180"></canvas>
+            </div>
+            <div class="graph-card">
+                    <span>{{ i18n.live.quick_metrics.coolant }}</span>
+                <canvas id="coolant-chart" width="560" height="180"></canvas>
+            </div>
+            <div class="graph-card">
+                    <span>{{ i18n.live.quick_metrics.voltage }}</span>
+                <canvas id="voltage-chart" width="560" height="180"></canvas>
+            </div>
+            <div class="graph-card">
+                    <span>{{ i18n.live.quick_metrics.engine_load }}</span>
+                <canvas id="engine-load-chart" width="560" height="180"></canvas>
+            </div>
+            <div class="graph-card">
+                    <span>{{ i18n.live.throttle_position }}</span>
+                <canvas id="throttle-chart" width="560" height="180"></canvas>
             </div>
         </div>
     </article>

@@ -17,7 +17,7 @@ Current version: `v0.2.2`
 - Fault code clearing with SAFE mode protection
 - Readiness monitor overview
 - Freeze-frame snapshot support where available
-- VIN reading and manual VIN lookup
+- Experimental VIN reading and manual VIN lookup
 - Dutch RDW license plate lookup
 - Local VIN/license plate lookup history
 - Local scan history stored in SQLite
@@ -39,6 +39,12 @@ This app uses standard OBD-II data through `python-obd`. Standard OBD-II mainly 
 ABS, airbag, BCM, window, mirror, odometer, ADAS and other manufacturer-specific module access usually requires brand-specific diagnostics, UDS/CAN tooling, security access and vehicle-specific CAN IDs. Those features are not guaranteed through this project or the `python-obd` library.
 
 Features such as Driver Alert, speed warning, lane assist or other assistance settings are usually not available through standard OBD-II. Some cars expose them through manufacturer-specific coding tools, but this project does not write coding changes to safety or assistance modules.
+
+## Vehicle Lookup Limitations
+
+VIN reading and VIN based vehicle information are experimental. The VIN feature can still contain bugs and may not work correctly on every vehicle, adapter or ECU response format. It is not guaranteed to be 100% accurate. This may be improved in future updates, but it is also possible that this feature changes heavily or gets removed if it cannot be made reliable enough.
+
+License plate lookup currently only supports Dutch license plates through RDW data. International license plate lookup may be added in a future update, but this is not guaranteed. This feature may also change or be removed later if it becomes unreliable or too limited.
 
 ## Requirements
 

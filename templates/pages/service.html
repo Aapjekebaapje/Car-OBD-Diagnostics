@@ -48,13 +48,25 @@
                 </div>
             </div>
             <div class="limited-mode-box">
-                <p class="eyebrow">{{ i18n.service.limited_mode_eyebrow }}</p>
-                <button id="limited-mode-button" class="secondary-action" type="button">{{ i18n.service.limited_mode_enable }}</button>
-                <p id="limited-mode-copy">{{ i18n.service.limited_mode_copy }}</p>
+                <p class="eyebrow">{{ i18n.service.poll_profile_eyebrow }}</p>
+                <div class="profile-button-row">
+                    <button class="secondary-action poll-profile-button" type="button" data-poll-profile="performance">{{ i18n.service.profile_performance }}</button>
+                    <button class="secondary-action poll-profile-button" type="button" data-poll-profile="balanced">{{ i18n.service.profile_balanced }}</button>
+                    <button class="secondary-action poll-profile-button" type="button" data-poll-profile="safe">{{ i18n.service.profile_safe }}</button>
+                </div>
+                <p id="poll-profile-copy">{{ i18n.service.poll_profile_copy }}</p>
             </div>
             <button id="test-connection-button" class="secondary-action" type="button">{{ i18n.service.connection_test_button }}</button>
             <p id="test-connection-result">{{ i18n.service.connection_test_result }}</p>
             <div id="test-connection-steps" class="sensor-support-list"></div>
+            <div class="setup-guide">
+                <p class="eyebrow">{{ i18n.service.setup_guide_eyebrow }}</p>
+                <ol>
+                    {% for step in i18n.service.setup_steps %}
+                    <li>{{ step }}</li>
+                    {% endfor %}
+                </ol>
+            </div>
             <div class="demo-mode-box">
                 <p class="eyebrow">{{ i18n.service.simulator_eyebrow }}</p>
                 <button id="demo-mode-button" class="secondary-action" type="button">{{ i18n.service.demo_enable }}</button>
@@ -70,6 +82,16 @@
                     <p id="demo-preset-copy">{{ i18n.service.demo_preset_copy }}</p>
                 </div>
             </div>
+        </article>
+
+        <article class="panel warning-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.service.advanced_warning_eyebrow }}</p>
+                    <h2>{{ i18n.service.advanced_warning_title }}</h2>
+                </div>
+            </div>
+            <p class="panel-copy">{{ i18n.service.advanced_warning_copy }}</p>
         </article>
     </div>
 </section>
