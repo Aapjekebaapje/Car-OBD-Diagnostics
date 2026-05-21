@@ -82,6 +82,14 @@ Activate it on Windows:
 .venv\Scripts\activate
 ```
 
+If PowerShell blocks the virtual environment activation script with an execution policy error, run this command in the same PowerShell window and then try activating again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+```
+
+This only changes the policy for the current PowerShell session.
+
 Activate it on macOS or Linux:
 
 ```bash
@@ -232,6 +240,12 @@ If no adapter is detected:
 - Confirm the ignition is on
 - Select the correct COM port in `Service`
 - Try disabling other software that may be using the adapter
+
+If PowerShell blocks `.venv\Scripts\activate`:
+
+- Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned`
+- Activate the virtual environment again
+- This setting only applies to the current PowerShell window
 
 If Windows shows `PermissionError(13)` or `Access denied` for a COM port:
 
