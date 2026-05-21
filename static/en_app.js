@@ -1,6 +1,6 @@
 const CONNECTED_POLL_MS = 200;
 const DISCONNECTED_POLL_MS = 1000;
-const FAST_GAUGE_POLL_MS = 50;
+const FAST_GAUGE_POLL_MS = 40;
 const IDLE_GAUGE_POLL_MS = 250;
 const TACH_MIN_DEG = 135;
 const TACH_MAX_DEG = 405;
@@ -63,10 +63,14 @@ const VEHICLE_LOOKUP_HISTORY_KEY = "obd_vehicle_lookup_history";
 const VEHICLE_LOOKUP_HISTORY_LIMIT = 10;
 const demoPresetMeta = new Map();
 let lastChartSampleAt = 0;
-const GAUGE_STIFFNESS = 55;
-const GAUGE_DAMPING = 0.86;
-const RPM_MAX_VELOCITY = 22000;
-const SPEED_MAX_VELOCITY = 900;
+const GAUGE_STIFFNESS = 78;
+const GAUGE_DAMPING = 0.9;
+const RPM_MAX_VELOCITY = 30000;
+const SPEED_MAX_VELOCITY = 1200;
+const RPM_TARGET_DEADBAND = 12;
+const SPEED_TARGET_DEADBAND = 0.4;
+const RPM_SNAP_DELTA = 2600;
+const SPEED_SNAP_DELTA = 45;
 
 function byId(id) {
     return document.getElementById(id);
@@ -826,7 +830,7 @@ function updateStatus(status, sessionState = {}) {
     setText("adapter-state", adapterStateText);
     setText("system-status", systemStatusText);
     setText("protocol", `${tr("protocol_prefix", "Protocol")}: ${status.protocol || "Unknown"}`);
-    setText("status-message", status.user_message || status.error || tr("status_no_connection", "No connection"));
+    setText("status-message", status.user_message || (status.connected ? tr("live_streaming", "Streaming") : status.error || tr("status_no_connection", "No connection")));
     setText("last-update", `${tr("update_prefix", "Update")}: ${status.last_update || "--"}`);
     setText("last-successful-update", `${tr("last_live_prefix", "Last live data")}: ${status.last_successful_update || "--"}`);
     setText("current-port", portLabel);
@@ -975,27 +979,32 @@ function updateGaugeTargets(vehicle) {
     const nextRpm = numberFromValue(vehicle.rpm?.value);
     const nextSpeed = numberFromValue(vehicle.speed?.value);
 
-    targetRpm = nextRpm ?? 0;
-    targetSpeed = nextSpeed ?? 0;
+    if (nextRpm !== null && nextRpm !== undefined && Math.abs(nextRpm - targetRpm) >= RPM_TARGET_DEADBAND) {
+        targetRpm = nextRpm;
+    }
+    if (nextSpeed !== null && nextSpeed !== undefined && Math.abs(nextSpeed - targetSpeed) >= SPEED_TARGET_DEADBAND) {
+        targetSpeed = nextSpeed;
+    }
 }
 
-function smoothGaugeValue(current, target, velocity, dt, maxVelocity) {
+function smoothGaugeValue(current, target, velocity, dt, maxVelocity, snapDelta) {
     const difference = target - current;
-    if (Math.abs(difference) > maxVelocity * 0.25) {
+    if (Math.abs(difference) >= snapDelta) {
         return {
             current: target,
             velocity: 0,
         };
     }
 
+    const acceleration = difference * GAUGE_STIFFNESS;
     const nextVelocity = clamp(
-        (velocity + difference * GAUGE_STIFFNESS * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
+        (velocity + acceleration * dt) * Math.pow(GAUGE_DAMPING, dt * 60),
         -maxVelocity,
         maxVelocity
     );
     const nextCurrent = current + nextVelocity * dt;
 
-    if (Math.abs(target - nextCurrent) < 0.15 && Math.abs(nextVelocity) < 0.2) {
+    if (Math.abs(target - nextCurrent) < 0.08 && Math.abs(nextVelocity) < 0.15) {
         return {
             current: target,
             velocity: 0,
@@ -1429,8 +1438,34 @@ function toggleSimpleMode() {
     updateSimpleSummary(lastLivePayload?.simple_summary || {});
 }
 
-function exportScanReport() {
-    window.location.href = "/api/report/export";
+async function exportScanReport() {
+    if (!isFrozen || !frozenPayload) {
+        window.location.href = "/api/report/export";
+        return;
+    }
+
+    try {
+        const response = await fetch("/api/report/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(frozenPayload)
+        });
+        if (!response.ok) throw new Error(`Server returned status ${response.status}`);
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const timestamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+        link.href = url;
+        link.download = `obd-scan-report-${timestamp}.html`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error(error);
+        setText("report-action-result", tr("save_scan_failed", "Scan could not be saved."));
+    }
 }
 
 function formatEngine(decoded) {
@@ -1592,11 +1627,11 @@ function renderGauges(now = performance.now()) {
     const dt = clamp(lastGaugeFrameAt ? (now - lastGaugeFrameAt) / 1000 : 1 / 60, 1 / 240, 0.05);
     lastGaugeFrameAt = now;
 
-    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY);
+    const rpmState = smoothGaugeValue(currentRpm, targetRpm, rpmVelocity, dt, RPM_MAX_VELOCITY, RPM_SNAP_DELTA);
     currentRpm = rpmState.current;
     rpmVelocity = rpmState.velocity;
 
-    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY);
+    const speedState = smoothGaugeValue(currentSpeed, targetSpeed, speedVelocity, dt, SPEED_MAX_VELOCITY, SPEED_SNAP_DELTA);
     currentSpeed = speedState.current;
     speedVelocity = speedState.velocity;
 
@@ -1828,6 +1863,11 @@ function toggleFreeze() {
         };
         if (lastLivePayload) {
             frozenPayload = lastLivePayload;
+            frozenPayload.vehicle = {
+                ...(frozenPayload.vehicle || {}),
+                rpm: { ...(frozenPayload.vehicle?.rpm || {}), value: `${rpmText} RPM` },
+                speed: { ...(frozenPayload.vehicle?.speed || {}), value: `${speedText} km/h` }
+            };
         }
         isFrozen = true;
     }

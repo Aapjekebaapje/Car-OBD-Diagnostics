@@ -10,6 +10,11 @@ POLL_INTERVAL = 0.1
 # Dedicated RPM/speed loop cadence for the dashboard gauges.
 RPM_POLL_INTERVAL = 0.05
 
+# OBD adapter connection behavior.
+OBD_CONNECT_TIMEOUT = 1.0
+OBD_CONNECT_ATTEMPTS = 3
+OBD_CONNECT_RETRY_DELAY = 1.0
+
 # Upper bound used when the poll guard slows down after repeated query errors.
 MAX_POLL_INTERVAL = 0.8
 

@@ -4,10 +4,13 @@ A Python and Flask based OBD-II diagnostic dashboard for reading live ECU data, 
 
 The project includes a tablet-style web interface, English and Dutch language support, local scan history, VIN/license plate workflows and a built-in demo mode for testing without a car connected.
 
+Current version: `v0.2.1`
+
 ## Features
 
-- Live OBD-II dashboard with RPM and speed gauges
+- Live OBD-II dashboard with smooth RPM and speed gauges
 - Fast lightweight gauge updates through `/api/gauges`
+- Separate RPM/speed polling for a more real-time gauge feel
 - Prioritized OBD polling to reduce ECU and adapter load
 - Coolant temperature, ECU voltage, engine load, fuel trims and other live sensor values
 - Stored, pending and permanent diagnostic trouble code views
@@ -21,7 +24,9 @@ The project includes a tablet-style web interface, English and Dutch language su
 - USB / COM port selection
 - Connection test and adapter status view
 - Demo mode with multiple simulated drive presets
-- HTML scan report export
+- Styled HTML scan report export
+- Export from live data or from a paused/frozen dashboard snapshot
+- Multi-language report export in English or Dutch
 - Battery and charging voltage check
 - Optional simple summary mode
 - Supported PID overview
@@ -31,7 +36,9 @@ The project includes a tablet-style web interface, English and Dutch language su
 
 This app uses standard OBD-II data through `python-obd`. Standard OBD-II mainly covers engine and emissions related ECU data.
 
-ABS, airbag, BCM, window, mirror, odometer and other manufacturer-specific module access usually requires brand-specific diagnostics, UDS/CAN tooling, security access and vehicle-specific CAN IDs. Those features are not guaranteed through this project or the `python-obd` library.
+ABS, airbag, BCM, window, mirror, odometer, ADAS and other manufacturer-specific module access usually requires brand-specific diagnostics, UDS/CAN tooling, security access and vehicle-specific CAN IDs. Those features are not guaranteed through this project or the `python-obd` library.
+
+Features such as Driver Alert, speed warning, lane assist or other assistance settings are usually not available through standard OBD-II. Some cars expose them through manufacturer-specific coding tools, but this project does not write coding changes to safety or assistance modules.
 
 ## Requirements
 
@@ -123,6 +130,22 @@ Go to `Service` and enable `Demo Mode`. You can choose presets such as:
 
 Demo mode generates simulated live data, fault code states, readiness values and vehicle information.
 
+## HTML Report Export
+
+The dashboard can export a styled HTML scan report with vehicle details, live data, diagnostic trouble codes, readiness information and freeze-frame data where available.
+
+Reports follow the selected interface language:
+
+- Dutch UI exports Dutch report labels
+- English UI exports English report labels
+
+The export button works in two modes:
+
+- Live stream: exports the latest available live dashboard data
+- Paused stream: exports the frozen dashboard snapshot
+
+OBD units are cleaned up in the report. For example, RPM values are shown as `RPM` instead of raw library text such as `revolutions_per_minute`.
+
 ## Configuration
 
 Refresh timings and history limits can be adjusted in `config.py`.
@@ -130,13 +153,19 @@ Refresh timings and history limits can be adjusted in `config.py`.
 ```python
 POLL_INTERVAL = 0.1
 RPM_POLL_INTERVAL = 0.05
+OBD_CONNECT_TIMEOUT = 1.0
+OBD_CONNECT_ATTEMPTS = 3
+OBD_CONNECT_RETRY_DELAY = 1.0
 FAST_SENSOR_INTERVAL = 0.5
 MEDIUM_SENSOR_INTERVAL = 2.0
 SLOW_SENSOR_INTERVAL = 10.0
+STALE_AFTER_SECONDS = 0.9
 SCAN_HISTORY_LIMIT = 20
 ```
 
 Lower values feel more live, but they also query the ECU more often. Keep non-critical values slower to avoid noisy adapters and unnecessary ECU load.
+
+RPM and speed are refreshed separately from slower dashboard values. This makes the gauges feel more responsive, but true millisecond-perfect sync is still limited by the vehicle ECU, OBD adapter, serial connection, Python polling and browser rendering.
 
 ## Language Support
 
@@ -199,6 +228,14 @@ If no adapter is detected:
 - Select the correct COM port in `Service`
 - Try disabling other software that may be using the adapter
 
+If Windows shows `PermissionError(13)` or `Access denied` for a COM port:
+
+- Another app or Python process is already using the adapter
+- Close other OBD/serial tools
+- Stop duplicate `python app.py` processes
+- Unplug and reconnect the USB adapter
+- Try a different COM port if Windows assigned a new one
+
 If live data is empty or unstable:
 
 - Confirm the vehicle supports standard OBD-II
@@ -206,6 +243,13 @@ If live data is empty or unstable:
 - Try Limited Mode
 - Check whether the adapter is a reliable ELM327-compatible device
 - Increase refresh intervals in `config.py` if the adapter returns noisy values
+
+If the dashboard says live data could not be read while the connection still shows connected:
+
+- Some individual PIDs may be unsupported by the car
+- The app may still have valid RPM, speed or other cached live values
+- Try reconnecting or enabling Limited Mode
+- Increase polling intervals if the adapter is unstable
 
 If fuel level jumps around:
 

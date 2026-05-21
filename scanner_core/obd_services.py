@@ -77,7 +77,7 @@ def connection_quality_snapshot(connection, connecting=False, error=None):
     car_connected = bool(connection and connection.is_connected())
     adapter_connected = phase in {"ELM Connected", "OBD Connected", "Car Connected"} or car_connected
     port_powered = phase in {"OBD Connected", "Car Connected"} or car_connected
-    live_data_active = bool(car_connected and not connecting and not error)
+    live_data_active = bool(car_connected and not connecting)
 
     return {
         "phase": phase,
@@ -155,7 +155,7 @@ def list_serial_ports():
     return ports
 
 
-def run_connection_test(obd_module, configured_port):
+def run_connection_test(obd_module, configured_port, timeout=1.0, attempts=2, retry_delay=0.5):
     detected_ports = list_serial_ports()
     selected_port = str(configured_port or "").strip().upper()
     selected_port_present = bool(
@@ -179,11 +179,42 @@ def run_connection_test(obd_module, configured_port):
         }
 
     test_connection = None
+    last_exception = None
     try:
-        if configured_port:
-            test_connection = obd_module.OBD(configured_port, fast=False)
-        else:
-            test_connection = obd_module.OBD(fast=False)
+        for attempt in range(1, max(1, int(attempts or 1)) + 1):
+            try:
+                if configured_port:
+                    test_connection = obd_module.OBD(
+                        configured_port,
+                        fast=False,
+                        timeout=timeout,
+                        check_voltage=False,
+                    )
+                else:
+                    test_connection = obd_module.OBD(
+                        fast=False,
+                        timeout=timeout,
+                        check_voltage=False,
+                    )
+                if test_connection and test_connection.is_connected():
+                    break
+                if attempt < attempts:
+                    import time
+                    time.sleep(retry_delay)
+            except Exception as exc:
+                last_exception = exc
+                try:
+                    if test_connection:
+                        test_connection.close()
+                except Exception:
+                    pass
+                test_connection = None
+                if attempt < attempts:
+                    import time
+                    time.sleep(retry_delay)
+
+        if test_connection is None and last_exception:
+            raise last_exception
 
         phase = str(test_connection.status())
         protocol = test_connection.protocol_name() if test_connection.is_connected() else "Unknown"
