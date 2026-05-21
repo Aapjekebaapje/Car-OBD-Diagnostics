@@ -1,0 +1,33 @@
+name: Send release changelog to Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send changelog to Discord
+        run: |
+          curl -H "Content-Type: application/json" \
+          -X POST \
+          -d "$(jq -n \
+            --arg title "🚀 New release: ${{ github.event.release.tag_name }}" \
+            --arg name "${{ github.event.repository.full_name }}" \
+            --arg url "${{ github.event.release.html_url }}" \
+            --arg body "${{ github.event.release.body }}" \
+            '{
+              username: "GitHub Releases",
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: $body,
+                color: 5814783,
+                footer: {
+                  text: $name
+                }
+              }]
+            }')" \
+          "${{ secrets.DISCORD_WEBHOOK }}"
