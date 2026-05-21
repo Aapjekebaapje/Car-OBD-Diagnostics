@@ -45,7 +45,7 @@ cryptography
 Clone the repository:
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/OBD-scanner-Python.git
+git clone https://github.com/Aapjekebaapje/OBD-scanner-Python.git
 cd OBD-scanner-Python
 ```
 
