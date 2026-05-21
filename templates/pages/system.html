@@ -1,0 +1,63 @@
+<section class="page-screen page-system" data-page="system">
+    <div class="system-console-layout">
+        <article class="panel detail-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.system.state_eyebrow }}</p>
+                    <h2>{{ i18n.system.state_title }}</h2>
+                </div>
+            </div>
+            <div class="detail-grid">
+                <div class="detail-row"><span>{{ i18n.system.status }}</span><strong id="system-status">{{ i18n.common.connecting }}</strong></div>
+                <div class="detail-row"><span>{{ i18n.system.protocol }}</span><strong id="system-protocol">{{ i18n.common.unknown }}</strong></div>
+                <div class="detail-row"><span>{{ i18n.system.port }}</span><strong id="system-port">{{ i18n.common.auto_detect }}</strong></div>
+                <div class="detail-row"><span>{{ i18n.system.mode }}</span><strong id="system-mode">{{ i18n.common.safe }}</strong></div>
+            </div>
+        </article>
+
+        <article class="panel log-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.system.log_eyebrow }}</p>
+                    <h2>{{ i18n.system.log_title }}</h2>
+                </div>
+            </div>
+            <div id="error-log" class="error-log">
+                <p>{{ i18n.system.no_errors }}</p>
+            </div>
+        </article>
+
+        <div class="system-side-stack">
+            <article class="panel metric-panel action-panel system-actions-panel">
+                <p class="eyebrow">{{ i18n.system.actions_eyebrow }}</p>
+                <div class="action-grid">
+                    <button id="save-scan-button" class="secondary-action" type="button">{{ i18n.system.save_scan }}</button>
+                    <button id="refresh-supported-button" class="secondary-action" type="button">{{ i18n.system.refresh_sensors }}</button>
+                </div>
+                <p id="save-scan-result">{{ i18n.system.save_scan_result }}</p>
+            </article>
+
+            <article class="panel metric-panel system-language-panel">
+                <p class="eyebrow">{{ i18n.partials.topbar.language_label }}</p>
+                <details class="system-language-dropdown">
+                    <summary class="system-language-trigger" aria-label="{{ i18n.partials.topbar.language_label }}">
+                        {% for option in language_options %}
+                        {% if lang == option.code %}
+                        <span class="system-language-current-code">{{ option.label }}</span>
+                        <span class="language-flag system-language-current-flag">{{ option.flag }}</span>
+                        {% endif %}
+                        {% endfor %}
+                    </summary>
+                    <div class="system-language-menu">
+                        {% for option in language_options %}
+                        <button class="language-option{% if lang == option.code %} is-active{% endif %}" type="button" data-language-code="{{ option.code }}" title="{{ option.label }}">
+                            <span class="language-flag system-language-menu-flag">{{ option.flag }}</span>
+                            <span class="language-code">{{ option.label }}</span>
+                        </button>
+                        {% endfor %}
+                    </div>
+                </details>
+            </article>
+        </div>
+    </div>
+</section>

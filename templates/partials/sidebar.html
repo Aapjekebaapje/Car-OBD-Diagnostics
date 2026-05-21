@@ -1,0 +1,36 @@
+<aside class="tablet-sidebar">
+    <div class="tablet-brand">
+        <div class="brand-icon">OBD</div>
+        <div>
+            <p class="eyebrow">{{ i18n.partials.sidebar.brand_eyebrow }}</p>
+            <strong>{{ i18n.partials.sidebar.brand_name }}</strong>
+        </div>
+    </div>
+
+    <nav class="module-nav" aria-label="{{ i18n.partials.sidebar.brand_eyebrow }}">
+        <a class="module-button is-active" href="#dashboard" data-page="dashboard">
+            <span class="module-label">{{ i18n.partials.sidebar.nav_home }}</span>
+            <small>{{ i18n.partials.sidebar.nav_home_small }}</small>
+        </a>
+    </nav>
+
+    <div class="sidebar-panel">
+        <p class="eyebrow">{{ i18n.partials.sidebar.connection_eyebrow }}</p>
+        <div class="status-stack">
+            <div class="status-line">
+                <span id="status-dot"></span>
+                <strong id="status-text">{{ i18n.partials.sidebar.status_text }}</strong>
+            </div>
+            <p id="protocol">{{ i18n.partials.sidebar.protocol }}</p>
+            <p id="status-message">{{ i18n.partials.sidebar.status_message }}</p>
+            <p id="connection-hint" class="connection-hint">{{ i18n.partials.sidebar.connection_hint }}</p>
+        </div>
+        <button id="reconnect-button" class="secondary-action primary-cta" type="button">{{ i18n.partials.sidebar.retry_connection }}</button>
+    </div>
+
+    <div class="sidebar-panel compact">
+        <p class="eyebrow">{{ i18n.partials.sidebar.last_update_eyebrow }}</p>
+        <strong id="last-update">{{ i18n.partials.sidebar.last_update }}</strong>
+        <p id="last-successful-update">{{ i18n.partials.sidebar.last_live_data }}</p>
+    </div>
+</aside>

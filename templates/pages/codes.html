@@ -1,0 +1,50 @@
+<section class="page-screen page-codes" data-page="codes">
+    <article class="panel">
+        <div class="panel-heading">
+            <div>
+                <p class="eyebrow">{{ i18n.codes.eyebrow }}</p>
+                <h2>{{ i18n.codes.title }}</h2>
+            </div>
+            <div class="status-pill-row">
+                <button id="scan-codes-button" class="secondary-action primary-cta inline-action" type="button">{{ i18n.codes.scan }}</button>
+                <button id="clear-button-codes" class="danger-action inline-action" type="button" data-result-target="clear-result-codes">{{ i18n.codes["clear"] }}</button>
+            </div>
+        </div>
+        <p id="standard-obd-note" class="standard-obd-note">{{ i18n.codes.note }}</p>
+        <p id="codes-status-message">{{ i18n.codes.status }}</p>
+        <p id="clear-result-codes">{{ i18n.codes.clear_result }}</p>
+        <div class="code-layout">
+            <div class="code-group-panel">
+                <div class="group-header">
+                    <h3>{{ i18n.codes.stored }}</h3>
+                    <span id="stored-count-codes">0</span>
+                </div>
+                <div id="stored-codes" class="codes"></div>
+            </div>
+            <div class="code-group-panel">
+                <div class="group-header">
+                    <h3>{{ i18n.codes.pending }}</h3>
+                    <span id="pending-count-codes">0</span>
+                </div>
+                <div id="pending-codes" class="codes"></div>
+            </div>
+            <div class="code-group-panel">
+                <div class="group-header">
+                    <h3>{{ i18n.codes.permanent }}</h3>
+                    <span id="permanent-count-codes">0</span>
+                </div>
+                <div id="permanent-codes" class="codes"></div>
+            </div>
+        </div>
+    </article>
+
+    <article class="panel freeze-frame-panel">
+        <div class="panel-heading">
+            <div>
+                <p class="eyebrow">{{ i18n.codes.freeze_frame_eyebrow }}</p>
+                <h2>{{ i18n.codes.freeze_frame_title }}</h2>
+            </div>
+        </div>
+        <div id="freeze-frame-grid" class="sensor-table"></div>
+    </article>
+</section>

@@ -133,7 +133,6 @@ The selected language is stored in the `obd_lang` browser cookie.
 ```txt
 .
 ├── app.py
-├── translation.py
 ├── requirements.txt
 ├── scanner_core/
 │   ├── cache_services.py
@@ -142,7 +141,8 @@ The selected language is stored in the `obd_lang` browser cookie.
 │   ├── obd_services.py
 │   ├── report_services.py
 │   ├── session_services.py
-│   └── storage_services.py
+│   ├── storage_services.py
+│   └── translation.py
 ├── static/
 │   ├── en_app.js
 │   ├── nl_app.js

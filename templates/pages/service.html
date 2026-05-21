@@ -1,0 +1,75 @@
+<section class="page-screen page-service" data-page="service">
+    <div class="service-layout">
+        <article class="panel service-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.service.clear_eyebrow }}</p>
+                    <h2>{{ i18n.service.clear_title }}</h2>
+                </div>
+            </div>
+            <p class="panel-copy">{{ i18n.service.clear_copy }}</p>
+            <button id="clear-button" class="danger-action" type="button">{{ i18n.service.clear_button }}</button>
+            <p id="clear-result">{{ i18n.service.clear_result }}</p>
+        </article>
+
+        <article class="panel config-panel service-config-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.service.adapter_setup_eyebrow }}</p>
+                    <h2>{{ i18n.service.adapter_setup_title }}</h2>
+                </div>
+            </div>
+            <form id="port-form" class="port-form service-port-form">
+                <label for="port-input">{{ i18n.service.adapter_port_label }}</label>
+                <div class="port-select-wrap">
+                    <div class="port-dropdown-shell" data-port-dropdown>
+                        <button id="port-dropdown-trigger" class="port-dropdown-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="port-dropdown-menu">
+                            <span class="port-dropdown-copy">
+                                <span class="port-dropdown-eyebrow">{{ i18n.service.adapter_port_label }}</span>
+                                <span id="port-dropdown-value" class="port-dropdown-value">{{ i18n.service.adapter_port_placeholder }}</span>
+                            </span>
+                            <span class="port-dropdown-icon" aria-hidden="true"></span>
+                        </button>
+                        <div id="port-dropdown-menu" class="port-dropdown-menu" role="listbox" hidden></div>
+                    </div>
+                    <select id="port-input" class="port-native-select" name="port" aria-label="{{ i18n.service.adapter_port_label }}">
+                        <option value="">{{ i18n.service.adapter_port_placeholder }}</option>
+                    </select>
+                </div>
+                <p id="port-result">{{ i18n.service.adapter_port_copy }}</p>
+            </form>
+        </article>
+
+        <article class="panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.service.connection_test_eyebrow }}</p>
+                    <h2>{{ i18n.service.connection_test_title }}</h2>
+                </div>
+            </div>
+            <div class="limited-mode-box">
+                <p class="eyebrow">{{ i18n.service.limited_mode_eyebrow }}</p>
+                <button id="limited-mode-button" class="secondary-action" type="button">{{ i18n.service.limited_mode_enable }}</button>
+                <p id="limited-mode-copy">{{ i18n.service.limited_mode_copy }}</p>
+            </div>
+            <button id="test-connection-button" class="secondary-action" type="button">{{ i18n.service.connection_test_button }}</button>
+            <p id="test-connection-result">{{ i18n.service.connection_test_result }}</p>
+            <div id="test-connection-steps" class="sensor-support-list"></div>
+            <div class="demo-mode-box">
+                <p class="eyebrow">{{ i18n.service.simulator_eyebrow }}</p>
+                <button id="demo-mode-button" class="secondary-action" type="button">{{ i18n.service.demo_enable }}</button>
+                <p id="demo-mode-copy">{{ i18n.service.demo_copy }}</p>
+                <div class="demo-preset-box">
+                    <p class="eyebrow">{{ i18n.service.simulator_preset_eyebrow }}</p>
+                    <div class="demo-preset-grid">
+                        <button class="secondary-action demo-preset-button" type="button" data-demo-preset="idle">{{ i18n.service.idle }}</button>
+                        <button class="secondary-action demo-preset-button" type="button" data-demo-preset="cruise">{{ i18n.service.cruise }}</button>
+                        <button class="secondary-action demo-preset-button" type="button" data-demo-preset="heavy_load">{{ i18n.service.heavy_load }}</button>
+                        <button class="secondary-action demo-preset-button" type="button" data-demo-preset="fault_present">{{ i18n.service.fault_present }}</button>
+                    </div>
+                    <p id="demo-preset-copy">{{ i18n.service.demo_preset_copy }}</p>
+                </div>
+            </div>
+        </article>
+    </div>
+</section>

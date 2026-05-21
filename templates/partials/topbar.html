@@ -1,0 +1,38 @@
+<header class="topbar">
+    <div class="topbar-intro">
+        <p class="eyebrow">{{ i18n.partials.topbar.eyebrow }}</p>
+        <h1>{{ i18n.partials.topbar.title }}</h1>
+    </div>
+
+    <div class="topbar-actions">
+        <div class="topbar-status-group">
+            <div class="status-chip">
+                <span class="chip-label">{{ i18n.partials.topbar.port }}</span>
+                <strong id="current-port">{{ i18n.common.auto_detect }}</strong>
+            </div>
+            <div class="status-chip">
+                <span class="chip-label">{{ i18n.partials.topbar.adapter }}</span>
+                <strong id="adapter-state">{{ i18n.common.searching }}</strong>
+            </div>
+            <div class="status-chip scope-chip">
+                <span class="chip-label">{{ i18n.partials.topbar.scope }}</span>
+                <strong id="scope-badge">{{ i18n.partials.topbar.scope_value }}</strong>
+            </div>
+            <div class="status-chip mode-chip">
+                <span class="chip-label">{{ i18n.partials.topbar.limited_mode }}</span>
+                <strong id="limited-mode-state">{{ i18n.partials.topbar.limited_mode_off }}</strong>
+            </div>
+            <div class="status-chip live-chip">
+                <span class="chip-label">{{ i18n.partials.topbar.live_data }}</span>
+                <strong id="live-state">{{ i18n.partials.topbar.live_value }}</strong>
+            </div>
+        </div>
+
+        <div class="topbar-control-group">
+            <button id="freeze-button" class="secondary-action compact-action topbar-action-button" type="button">{{ i18n.partials.topbar.freeze }}</button>
+            <button id="safe-mode-button" class="primary-toggle topbar-action-button is-active" type="button" aria-pressed="true">
+                {{ i18n.partials.topbar.safe_mode_on }}
+            </button>
+        </div>
+    </div>
+</header>

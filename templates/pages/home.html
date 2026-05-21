@@ -1,0 +1,11 @@
+<section class="page-screen page-home is-active" data-page="dashboard">
+    <section class="tablet-launch-grid">
+        {% for card in i18n.home.cards %}
+        <button class="tablet-launch-card" type="button" data-page-target="{{ card.page }}" data-tone="{{ 'buy' if card.page == 'purchase-checklist' else card.page }}">
+            <span class="tablet-launch-icon">{{ card.icon }}</span>
+            <strong>{{ card.title }}</strong>
+            <p>{{ card.description }}</p>
+        </button>
+        {% endfor %}
+    </section>
+</section>

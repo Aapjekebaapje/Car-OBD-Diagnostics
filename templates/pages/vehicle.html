@@ -1,0 +1,118 @@
+<section class="page-screen page-vehicle" data-page="vehicle">
+    <div class="vehicle-layout">
+        <article class="panel vehicle-vin-panel vehicle-panel-surface">
+            <div class="vehicle-section-head">
+                <div>
+                    <p class="eyebrow">{{ i18n.vehicle.vin_eyebrow }}</p>
+                    <h2>{{ i18n.vehicle.vin_title }}</h2>
+                    <p class="vehicle-section-copy">{{ i18n.vehicle.vin_copy }}</p>
+                </div>
+                <button id="refresh-vin-button" class="secondary-action primary-cta inline-action" type="button">{{ i18n.vehicle.read_vin }}</button>
+            </div>
+
+            <div class="vehicle-identity-hero">
+                <div class="identity-hero-copy">
+                    <span class="vin-label">{{ i18n.vehicle.primary_vin }}</span>
+                    <strong id="vin-value">{{ i18n.vehicle.vin_not_loaded }}</strong>
+                    <p id="vin-message">{{ i18n.vehicle.vin_message }}</p>
+                </div>
+                <div class="identity-hero-badge">
+                    <span>{{ i18n.vehicle.decoder }}</span>
+                    <strong>{{ i18n.vehicle.live }}</strong>
+                    <small>{{ i18n.vehicle.live_updates }}</small>
+                </div>
+            </div>
+
+            <div class="vehicle-subsection-card manual-vin-card">
+                <div class="vehicle-subsection-head">
+                    <div>
+                        <p class="eyebrow">{{ i18n.vehicle.manual_vin_eyebrow }}</p>
+                        <h3>{{ i18n.vehicle.manual_vin_title }}</h3>
+                    </div>
+                    <span class="vehicle-subsection-note">{{ i18n.vehicle.manual_vin_note }}</span>
+                </div>
+
+                <form id="manual-vin-form" class="plate-form manual-vin-form">
+                    <label for="manual-vin-input">{{ i18n.vehicle.manual_vin_label }}</label>
+                    <div class="port-row">
+                        <input id="manual-vin-input" name="vin" type="text" placeholder="{{ i18n.vehicle.manual_vin_placeholder }}" maxlength="17" autocomplete="off" spellcheck="false">
+                        <div class="manual-vin-actions">
+                            <button id="manual-vin-button" class="primary-cta" type="submit">{{ i18n.vehicle.search_vin }}</button>
+                            <button id="clear-vin-button" class="secondary-action" type="button">{{ i18n.vehicle.clear_vin }}</button>
+                        </div>
+                    </div>
+                    <p id="manual-vin-result">{{ i18n.vehicle.manual_vin_result }}</p>
+                </form>
+            </div>
+
+            <div class="vehicle-summary-grid">
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.make }}</span><strong id="vin-make">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.model }}</span><strong id="vin-model">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.year }}</span><strong id="vin-year">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.fuel }}</span><strong id="vin-fuel">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.body }}</span><strong id="vin-body">--</strong></div>
+                <div class="spec-card feature-card feature-card-wide"><span>{{ i18n.vehicle.engine }}</span><strong id="vin-engine">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.drive }}</span><strong id="vin-drive">--</strong></div>
+                <div class="spec-card feature-card"><span>{{ i18n.vehicle.built_in }}</span><strong id="vin-plant">--</strong></div>
+            </div>
+
+            <article class="vin-extra-panel vehicle-subsection-card">
+                <div class="vehicle-subsection-head">
+                    <div>
+                        <p class="eyebrow">{{ i18n.vehicle.decoded_vin_eyebrow }}</p>
+                        <h2>{{ i18n.vehicle.decoded_vin_title }}</h2>
+                    </div>
+                    <span class="vehicle-subsection-note">{{ i18n.vehicle.decoded_vin_note }}</span>
+                </div>
+                <div id="vin-extra-details" class="vehicle-spec-grid"></div>
+            </article>
+        </article>
+
+        <article class="panel vehicle-rdw-panel vehicle-panel-surface">
+            <div class="vehicle-section-head">
+                <div>
+                    <p class="eyebrow">{{ i18n.vehicle.rdw_eyebrow }}</p>
+                    <h2>{{ i18n.vehicle.rdw_title }}</h2>
+                    <p class="vehicle-section-copy">{{ i18n.vehicle.rdw_copy }}</p>
+                </div>
+            </div>
+
+            <div class="vehicle-subsection-card rdw-lookup-card">
+                <div class="vehicle-subsection-head">
+                    <div>
+                        <p class="eyebrow">{{ i18n.vehicle.plate_search_eyebrow }}</p>
+                        <h3>{{ i18n.vehicle.plate_search_title }}</h3>
+                    </div>
+                    <span class="vehicle-subsection-note">{{ i18n.vehicle.plate_search_note }}</span>
+                </div>
+                <form id="plate-form" class="plate-form">
+                    <label for="plate-input">{{ i18n.vehicle.plate_label }}</label>
+                    <div class="port-row">
+                        <input id="plate-input" name="plate" type="text" placeholder="{{ i18n.vehicle.plate_placeholder }}" autocomplete="off">
+                        <button class="primary-cta" type="submit">{{ i18n.vehicle.lookup }}</button>
+                    </div>
+                    <p id="plate-result">{{ i18n.vehicle.plate_result }}</p>
+                </form>
+            </div>
+
+            <div class="rdw-highlight-strip">
+                <div class="detail-row highlight-row"><span>{{ i18n.vehicle.plate }}</span><strong id="rdw-plate">--</strong></div>
+                <div class="detail-row highlight-row"><span>{{ i18n.vehicle.brand }}</span><strong id="rdw-brand">--</strong></div>
+                <div class="detail-row highlight-row"><span>{{ i18n.vehicle.model }}</span><strong id="rdw-model">--</strong></div>
+                <div class="detail-row highlight-row"><span>{{ i18n.vehicle.fuel }}</span><strong id="rdw-fuel">--</strong></div>
+            </div>
+
+            <div class="rdw-result-grid">
+                <div class="detail-row"><span>{{ i18n.vehicle.vehicle_type }}</span><strong id="rdw-vehicle-type">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.color }}</span><strong id="rdw-color">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.apk_expiry }}</span><strong id="rdw-apk">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.first_registration }}</span><strong id="rdw-first-registration">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.build_year }}</span><strong id="rdw-build-year">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.engine_size }}</span><strong id="rdw-engine-cc">--</strong></div>
+                <div class="detail-row"><span>{{ i18n.vehicle.curb_weight }}</span><strong id="rdw-weight">--</strong></div>
+                <div class="detail-row detail-row-accent"><span>{{ i18n.vehicle.status }}</span><strong>{{ i18n.vehicle.rdw_snapshot }}</strong></div>
+            </div>
+        </article>
+    </div>
+
+</section>

@@ -1,0 +1,98 @@
+<section class="page-screen page-purchase-checklist" data-page="purchase-checklist">
+    <article class="panel purchase-hero-panel">
+        <div class="purchase-hero-copy">
+            <p class="eyebrow">{{ i18n.purchase_checklist.hero_eyebrow }}</p>
+            <h2>{{ i18n.purchase_checklist.hero_title }}</h2>
+            <p class="purchase-hero-text">{{ i18n.purchase_checklist.hero_text }}</p>
+        </div>
+        <div class="purchase-hero-side">
+            {% for stat in i18n.purchase_checklist.stats %}
+            <div class="purchase-hero-stat">
+                <span>{{ stat.label }}</span>
+                <strong>{{ stat.value }}</strong>
+            </div>
+            {% endfor %}
+        </div>
+    </article>
+
+    <div class="purchase-layout">
+        <article class="panel purchase-main-panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">{{ i18n.purchase_checklist.route_eyebrow }}</p>
+                    <h2>{{ i18n.purchase_checklist.route_title }}</h2>
+                </div>
+            </div>
+
+            <div class="purchase-route">
+                {% for step in i18n.purchase_checklist.steps %}
+                <div class="purchase-step">
+                    <span class="purchase-step-badge">{{ step.badge }}</span>
+                    <div class="purchase-step-body">
+                        <strong>{{ step.title }}</strong>
+                        <ul class="purchase-points">
+                            {% for point in step.points %}
+                            <li>{{ point }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </article>
+
+        <div class="purchase-side">
+            <article class="panel purchase-side-panel">
+                <div class="panel-heading compact-heading">
+                    <div>
+                        <p class="eyebrow">{{ i18n.purchase_checklist.side.flags_eyebrow }}</p>
+                        <h2>{{ i18n.purchase_checklist.side.flags_title }}</h2>
+                    </div>
+                </div>
+                <ul class="purchase-points purchase-points-danger">
+                    {% for point in i18n.purchase_checklist.side.flags_points %}
+                    <li>{{ point }}</li>
+                    {% endfor %}
+                </ul>
+            </article>
+
+            <article class="panel purchase-side-panel">
+                <div class="panel-heading compact-heading">
+                    <div>
+                        <p class="eyebrow">{{ i18n.purchase_checklist.side.bring_eyebrow }}</p>
+                        <h2>{{ i18n.purchase_checklist.side.bring_title }}</h2>
+                    </div>
+                </div>
+                <ul class="purchase-points">
+                    {% for point in i18n.purchase_checklist.side.bring_points %}
+                    <li>{{ point }}</li>
+                    {% endfor %}
+                </ul>
+            </article>
+
+            <article class="panel purchase-side-panel">
+                <div class="panel-heading compact-heading">
+                    <div>
+                        <p class="eyebrow">{{ i18n.purchase_checklist.side.ask_eyebrow }}</p>
+                        <h2>{{ i18n.purchase_checklist.side.ask_title }}</h2>
+                    </div>
+                </div>
+                <ul class="purchase-points">
+                    {% for point in i18n.purchase_checklist.side.ask_points %}
+                    <li>{{ point }}</li>
+                    {% endfor %}
+                </ul>
+            </article>
+
+            <article class="panel purchase-side-panel purchase-side-highlight">
+                <div class="panel-heading compact-heading">
+                    <div>
+                        <p class="eyebrow">{{ i18n.purchase_checklist.side.rule_eyebrow }}</p>
+                        <h2>{{ i18n.purchase_checklist.side.rule_title }}</h2>
+                    </div>
+                </div>
+                <p class="panel-copy">{{ i18n.purchase_checklist.side.rule_copy }}</p>
+            </article>
+        </div>
+    </div>
+</section>

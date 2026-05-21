@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="{{ i18n.meta.html_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ i18n.meta.title }}</title>
+    <link rel="stylesheet" href="/static/style.css?v=live-layout-1">
+</head>
+<body>
+{% include "partials/startup_overlay.html" %}
+
+<div class="tablet-frame">
+    <div class="tablet-bezel">
+        <div class="tablet-screen">
+            {% include "partials/sidebar.html" %}
+
+            <main class="tablet-main">
+                {% include "partials/topbar.html" %}
+                {% include "pages/home.html" %}
+                {% include "pages/live.html" %}
+                {% include "pages/codes.html" %}
+                {% include "pages/vehicle.html" %}
+                {% include "pages/sensors.html" %}
+                {% include "pages/purchase_checklist.html" %}
+                {% include "pages/report.html" %}
+                {% include "pages/history.html" %}
+                {% include "pages/service.html" %}
+                {% include "pages/system.html" %}
+            </main>
+        </div>
+    </div>
+</div>
+
+{% include "partials/confirm_dialog.html" %}
+
+<script>
+window.APP_LANG = {{ lang | tojson }};
+window.APP_I18N = {{ js_translations | tojson }};
+</script>
+<script src="/static/{{ 'nl_app.js' if lang == 'nl' else 'en_app.js' }}?v=live-layout-1"></script>
+</body>
+</html>
