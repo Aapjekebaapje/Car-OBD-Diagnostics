@@ -1,4 +1,4 @@
-# Car-OBD-Diagnostics Test
+# Car-OBD-Diagnostics
 
 A Python and Flask based OBD-II diagnostic dashboard for reading live ECU data, fault codes, readiness information, freeze-frame data and vehicle details through a USB OBD adapter.
 
