@@ -68,7 +68,7 @@ except Exception as e:
     OBD_IMPORT_ERROR = e
 
 app = Flask(__name__)
-APP_VERSION = "v0.2.1"
+APP_VERSION = "v0.2.2"
 
 
 def current_language():
@@ -1254,8 +1254,25 @@ def render_export_html(payload, lang="en"):
         if value in (None, ""):
             return "--"
         formatted = str(value).strip()
+
+        def rpm_number(match):
+            try:
+                number = float(match.group(1).replace(",", "."))
+            except (TypeError, ValueError):
+                return f"{match.group(1)} RPM"
+            return f"{number:.1f} RPM"
+
+        formatted = re.sub(
+            r"(-?\d+(?:[.,]\d+)?)\s*(?:revolutions?_per_minute|revolutions?\s*/\s*minute|revolutions?\s+per\s+minute|rpm)\b",
+            lambda match: rpm_number(match),
+            formatted,
+            flags=re.IGNORECASE,
+        )
         replacements = [
             (r"\brevolutions_per_minute\b", "RPM"),
+            (r"\brevolution_per_minute\b", "RPM"),
+            (r"\brevolutions?\s*/\s*minute\b", "RPM"),
+            (r"\brevolutions?\s+per\s+minute\b", "RPM"),
             (r"\brpm\b", "RPM"),
             (r"\bkilometer / hour\b", "km/h"),
             (r"\bkilometer/hour\b", "km/h"),

@@ -4,7 +4,7 @@ A Python and Flask based OBD-II diagnostic dashboard for reading live ECU data, 
 
 The project includes a tablet-style web interface, English and Dutch language support, local scan history, VIN/license plate workflows and a built-in demo mode for testing without a car connected.
 
-Current version: `v0.2.1`
+Current version: `v0.2.2`
 
 ## Features
 
