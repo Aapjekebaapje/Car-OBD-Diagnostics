@@ -206,7 +206,7 @@ Filtered garage notes can be exported as a styled HTML report. Notes can also be
 Refresh timings and history limits can be adjusted in `config.py`.
 
 ```python
-APP_VERSION = "v0.3.0"
+APP_VERSION = "v0.3.1"
 POLL_INTERVAL = 0.1
 RPM_POLL_INTERVAL = 0.05
 OBD_CONNECT_TIMEOUT = 1.0
