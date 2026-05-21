@@ -59,7 +59,6 @@ Python packages used by the project:
 flask
 obd
 pyserial
-cryptography
 ```
 
 ## Installation
