@@ -1,4 +1,4 @@
-# OBD-scanner-Python
+# Car-OBD-Diagnostics
 
 A Python and Flask based OBD-II diagnostic dashboard for reading live ECU data, fault codes, readiness information, freeze-frame data and vehicle details through a USB OBD adapter. The project includes a tablet-style web interface, EN/NL language support and a built-in demo mode for testing the UI without a car connected.
 
