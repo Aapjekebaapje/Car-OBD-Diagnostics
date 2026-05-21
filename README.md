@@ -12,7 +12,9 @@ Current version: `v0.3.0`
 - Fast lightweight gauge updates through `/api/gauges`
 - Separate RPM/speed polling for a more real-time gauge feel
 - Prioritized OBD polling to reduce ECU and adapter load
+- Selectable polling profiles: Performance, Balanced and Safe
 - Coolant temperature, ECU voltage, engine load, fuel trims and other live sensor values
+- Live mini charts for coolant temperature, ECU voltage, engine load and throttle position
 - Stored, pending and permanent diagnostic trouble code views
 - Fault code clearing with SAFE mode protection
 - Readiness monitor overview
@@ -21,14 +23,19 @@ Current version: `v0.3.0`
 - Dutch RDW license plate lookup
 - Local VIN/license plate lookup history
 - Local scan history stored in SQLite
+- Garage notes saved per VIN and license plate
+- Garage note filtering and styled HTML export
 - USB / COM port selection
 - Connection test and adapter status view
+- Connection quality view for USB adapter, OBD port, ECU and live data state
 - Demo mode with multiple simulated drive presets
 - Styled HTML scan report export
 - Export from live data or from a paused/frozen dashboard snapshot
+- Report export presets for full report, fault codes, live data or vehicle info
 - Multi-language report export in English or Dutch
 - Battery and charging voltage check
 - Optional simple summary mode
+- Reset UI cache action for clearing local browser dashboard state
 - Supported PID overview
 - English and Dutch interface support
 
@@ -52,6 +59,14 @@ License plate lookup currently only supports Dutch license plates through RDW da
 - USB OBD-II adapter, for example an ELM327-compatible adapter
 - A vehicle with an OBD-II port
 - Windows, macOS or Linux
+
+## Tested Adapter
+
+This project is used and tested with this USB OBD-II adapter:
+
+- [OBD-II USB adapter on Amazon.nl](https://www.amazon.nl/dp/B07MQ8GHG3)
+
+In testing, this adapter works well with the dashboard for standard OBD-II live data, fault codes and connection detection. Results can still depend on the vehicle, ECU support, Windows COM port assignment and adapter quality, so other cars may behave differently.
 
 Python packages used by the project:
 
@@ -143,6 +158,16 @@ Go to `Service` and enable `Demo Mode`. You can choose presets such as:
 
 Demo mode generates simulated live data, fault code states, readiness values and vehicle information.
 
+## Polling Profiles
+
+The Service page includes three polling profiles:
+
+- Performance: faster updates for a more responsive dashboard
+- Balanced: recommended default for normal use
+- Safe: slower polling to reduce adapter and ECU load
+
+The selected profile is shown in the top bar and can be changed even when no USB adapter or ECU is connected. The app saves the selected profile locally and syncs it with the backend when available.
+
 ## HTML Report Export
 
 The dashboard can export a styled HTML scan report with vehicle details, live data, diagnostic trouble codes, readiness information and freeze-frame data where available.
@@ -157,18 +182,31 @@ The export button works in two modes:
 - Live stream: exports the latest available live dashboard data
 - Paused stream: exports the frozen dashboard snapshot
 
+Report exports can be created as a full report, fault-code-only report, live-data-only report or vehicle-info-only report.
+
 OBD units are cleaned up in the report. For example, RPM values are shown as `RPM` instead of raw library text such as `revolutions_per_minute`.
+
+## Garage Notes
+
+Garage notes are stored locally in SQLite and are linked to a vehicle identity. A note requires both:
+
+- VIN
+- License plate
+
+The app can auto-fill these fields when vehicle data is detected, but they can also be entered manually. Garage notes can be filtered by VIN and license plate, and the filtered notes can be exported as a styled HTML report.
 
 ## Configuration
 
 Refresh timings and history limits can be adjusted in `config.py`.
 
 ```python
+APP_VERSION = "v0.3.0"
 POLL_INTERVAL = 0.1
 RPM_POLL_INTERVAL = 0.05
 OBD_CONNECT_TIMEOUT = 1.0
 OBD_CONNECT_ATTEMPTS = 3
 OBD_CONNECT_RETRY_DELAY = 1.0
+MAX_POLL_INTERVAL = 0.8
 FAST_SENSOR_INTERVAL = 0.5
 MEDIUM_SENSOR_INTERVAL = 2.0
 SLOW_SENSOR_INTERVAL = 10.0
@@ -228,7 +266,9 @@ The app stores local configuration and scan history in:
 scanner_config.db
 ```
 
-This file is created and updated locally when you use the app. Browser-side VIN/license plate lookup history is stored in `localStorage`.
+This file is created and updated locally when you use the app. It stores settings, scan history and garage notes. Browser-side UI state and VIN/license plate lookup history are stored in `localStorage`.
+
+Use the Reset UI Cache button on the System page if the browser keeps old dashboard state after an update.
 
 ## Troubleshooting
 
@@ -259,7 +299,7 @@ If live data is empty or unstable:
 
 - Confirm the vehicle supports standard OBD-II
 - Try reconnecting
-- Try Limited Mode
+- Try the Safe polling profile
 - Check whether the adapter is a reliable ELM327-compatible device
 - Increase refresh intervals in `config.py` if the adapter returns noisy values
 
@@ -267,7 +307,7 @@ If the dashboard says live data could not be read while the connection still sho
 
 - Some individual PIDs may be unsupported by the car
 - The app may still have valid RPM, speed or other cached live values
-- Try reconnecting or enabling Limited Mode
+- Try reconnecting or switching to the Safe polling profile
 - Increase polling intervals if the adapter is unstable
 
 If fuel level jumps around:
