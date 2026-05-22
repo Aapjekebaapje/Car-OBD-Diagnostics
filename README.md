@@ -4,7 +4,7 @@ A Python and Flask based OBD-II diagnostic dashboard for reading live ECU data, 
 
 The project includes a tablet-style web interface, English and Dutch language support, local scan history, VIN/license plate workflows and a built-in demo mode for testing without a car connected.
 
-Current version: `v0.4.1`
+Current version: `v0.4.2`
 
 ## Features
 
@@ -223,7 +223,7 @@ Saved garage notes can be edited later. Editing fills the note form with the exi
 Refresh timings and history limits can be adjusted in `config.py`.
 
 ```python
-APP_VERSION = "v0.4.1"
+APP_VERSION = "v0.4.2"
 POLL_INTERVAL = 0.1
 RPM_POLL_INTERVAL = 0.05
 OBD_CONNECT_TIMEOUT = 1.0

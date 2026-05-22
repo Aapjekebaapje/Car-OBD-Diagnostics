@@ -1,3 +1,4 @@
+# Made by The Syndicate Development
 try:
     from obd.codes import DTC as PYTHON_OBD_DTC
 except Exception:

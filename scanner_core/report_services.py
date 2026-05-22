@@ -1,3 +1,4 @@
+# Made by The Syndicate Development
 def build_purchase_report(payload):
     status = payload.get("status", {})
     vehicle = payload.get("vehicle", {})

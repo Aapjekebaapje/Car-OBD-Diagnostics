@@ -1,3 +1,4 @@
+# Made by The Syndicate Development
 import threading
 import time
 import traceback

@@ -1,3 +1,4 @@
+# Made by The Syndicate Development
 import re
 import time
 from html import escape

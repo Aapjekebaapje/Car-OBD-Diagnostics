@@ -1,3 +1,4 @@
+/* Made by The Syndicate Development */
 const CONNECTED_POLL_MS = 100;
 const DISCONNECTED_POLL_MS = 1200;
 const TACH_MIN_DEG = 135;

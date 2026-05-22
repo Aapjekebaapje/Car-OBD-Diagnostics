@@ -1,3 +1,4 @@
+# Made by The Syndicate Development
 """Configuration for the OBD Scanner.
 
 All interval values are in seconds.
@@ -8,7 +9,7 @@ missing values, or the dashboard feels noisy, increase the intervals a little.
 """
 
 # Version shown in the dashboard, sidebar and exported HTML reports.
-APP_VERSION = "v0.4.1"
+APP_VERSION = "v0.4.2"
 
 # Main dashboard refresh loop.
 # This controls the general live-data update speed for normal sensor values.
