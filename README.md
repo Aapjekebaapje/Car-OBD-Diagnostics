@@ -66,7 +66,8 @@ License plate lookup currently only supports Dutch license plates through RDW da
 
 Fault code reading, pending codes, permanent codes and fault-code clearing have not been fully tested on many real vehicles yet. If you test this project with a real car and notice missing codes, wrong descriptions, unstable behavior or anything else related to error codes, feedback is very welcome.
 
-You can share feedback here: https://discord.gg/caGWQv3VBC
+You can share feedback here: https://discord.gg/avZDNA6wZn?
+
 
 ## Requirements
 
@@ -147,6 +148,10 @@ http://127.0.0.1:5000/
 ```
 
 The app runs on port `5000` by default.
+
+## Download / Source
+GitHub Repository: https://github.com/Aapjekebaapje/Car-OBD-Diagnostics
+Official Website: https://thesyndicatedevelopment.nl
 
 ## Using A Real OBD Adapter
 
