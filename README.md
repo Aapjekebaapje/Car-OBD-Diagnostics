@@ -150,8 +150,8 @@ http://127.0.0.1:5000/
 The app runs on port `5000` by default.
 
 ## Download / Source
-GitHub Repository: https://github.com/Aapjekebaapje/Car-OBD-Diagnostics
-Official Website: https://thesyndicatedevelopment.nl
+1. GitHub Repository: https://github.com/Aapjekebaapje/Car-OBD-Diagnostics
+2. Official Website: https://thesyndicatedevelopment.nl
 
 ## Using A Real OBD Adapter
 
